@@ -1,0 +1,715 @@
+import type { Options, PanelSpec, StockSpec } from './types';
+
+export interface Placement {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  panelId: string;
+  rotated: boolean;
+}
+
+export interface StripResult {
+  y: number;
+  h: number;
+}
+
+export interface SheetResult {
+  stockId: string;
+  length: number;
+  width: number;
+  placements: Placement[];
+  /** Full-length rip strips, in cutting order (top to bottom). */
+  strips: StripResult[];
+}
+
+export interface OptimizeResult {
+  sheets: SheetResult[];
+  /** panelId -> number of instances that could not be placed */
+  unplaced: Map<string, number>;
+  unplacedArea: number;
+  placedCount: number;
+  totalPanelArea: number;
+  totalSheetArea: number;
+  /** Total area committed to rip strips (lower = bigger reusable offcut). */
+  stripArea: number;
+}
+
+/**
+ * One way of running the packer. The calculate step tries many strategies and
+ * keeps the best-scoring layout.
+ */
+export interface Strategy {
+  /** Order panels are placed in. */
+  order: 'maxdim' | 'area' | 'width' | 'length' | 'shuffle';
+  /** RNG seed, used when order is 'shuffle'. */
+  seed: number;
+  /** When opening a new strip, prefer the orientation making it shorter or taller. */
+  newStripPref: 'short' | 'tall';
+  /** Existing-strip fit: prioritise tight strip height or least leftover length. */
+  stripFit: 'height' | 'length';
+  /**
+   * 'fill' only opens new stock when nothing fits an open sheet; 'smallFirst'
+   * opens smaller stock even while a larger open sheet still has room.
+   */
+  stockPolicy: 'fill' | 'smallFirst';
+  /**
+   * Pull towards strips already holding the same panel: 'prefer' picks such a
+   * strip over a tighter fit elsewhere; 'strict' additionally opens a fresh
+   * strip rather than joining a strip of different panels.
+   */
+  affinity: 'none' | 'prefer' | 'strict';
+}
+
+export const DEFAULT_STRATEGY: Strategy = {
+  order: 'maxdim',
+  seed: 0,
+  newStripPref: 'short',
+  stripFit: 'height',
+  stockPolicy: 'smallFirst',
+  affinity: 'prefer',
+};
+
+const RANDOM_RESTARTS = 32;
+
+export function generateStrategies(): Strategy[] {
+  const strategies: Strategy[] = [];
+  for (const order of ['maxdim', 'area', 'width', 'length'] as const) {
+    for (const newStripPref of ['short', 'tall'] as const) {
+      for (const stripFit of ['height', 'length'] as const) {
+        for (const stockPolicy of ['fill', 'smallFirst'] as const) {
+          for (const affinity of ['none', 'prefer', 'strict'] as const) {
+            strategies.push({ order, seed: 0, newStripPref, stripFit, stockPolicy, affinity });
+          }
+        }
+      }
+    }
+  }
+  for (let seed = 1; seed <= RANDOM_RESTARTS; seed++) {
+    strategies.push({
+      order: 'shuffle',
+      seed,
+      newStripPref: seed % 2 === 0 ? 'short' : 'tall',
+      stripFit: (seed >> 1) % 2 === 0 ? 'height' : 'length',
+      stockPolicy: (seed >> 2) % 2 === 0 ? 'fill' : 'smallFirst',
+      affinity: (['none', 'prefer', 'strict'] as const)[seed % 3],
+    });
+  }
+  return strategies;
+}
+
+/**
+ * The workshop cut model: full-length rips (3m track, unwieldy) happen first
+ * and never again after cross cutting. Everything else is a cross cut on the
+ * hinged rail: separating cuts across a strip, plus one trim cut per piece
+ * that sits below its strip height (the piece is rotated and cut along its
+ * long axis, so its width must fit the cross-cut capacity).
+ *
+ * Lexicographic layout quality, lower is better:
+ *   unplaced panel area → sheets consumed (total stock area) → rip count →
+ *   cross-cut count → mixed-panel strips → prefer smaller sheets on ties →
+ *   committed strip area (biggest reusable offcut).
+ */
+export function scoreResult(r: OptimizeResult): number[] {
+  let rips = 0;
+  let crosses = 0;
+  let mix = 0;
+  let sumSq = 0;
+  for (const sheet of r.sheets) {
+    const area = sheet.length * sheet.width;
+    sumSq += area * area;
+    for (const strip of sheet.strips) {
+      if (strip.y + strip.h < sheet.width) rips++;
+      const items = sheet.placements
+        .filter((p) => p.y === strip.y)
+        .sort((a, b) => a.x - b.x);
+      if (items.length === 0) continue;
+      crosses += items.length - 1;
+      const last = items[items.length - 1];
+      if (last.x + last.w < sheet.length) crosses++;
+      for (const p of items) if (p.h < strip.h) crosses++;
+      const kinds = new Set(items.map((p) => p.panelId));
+      if (kinds.size > 1) mix += kinds.size - 1;
+    }
+  }
+  return [r.unplacedArea, r.totalSheetArea, rips, crosses, mix, sumSq, r.stripArea];
+}
+
+export function compareScores(a: number[], b: number[]): number {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function sortInstances(instances: PanelSpec[], strategy: Strategy): void {
+  const area = (p: PanelSpec) => p.length * p.width;
+  switch (strategy.order) {
+    case 'maxdim':
+      instances.sort(
+        (a, b) =>
+          Math.max(b.length, b.width) - Math.max(a.length, a.width) || area(b) - area(a)
+      );
+      break;
+    case 'area':
+      instances.sort(
+        (a, b) => area(b) - area(a) || Math.max(b.length, b.width) - Math.max(a.length, a.width)
+      );
+      break;
+    case 'width':
+      instances.sort((a, b) => b.width - a.width || area(b) - area(a));
+      break;
+    case 'length':
+      instances.sort((a, b) => b.length - a.length || area(b) - area(a));
+      break;
+    case 'shuffle': {
+      const rand = mulberry32(strategy.seed);
+      for (let i = instances.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [instances[i], instances[j]] = [instances[j], instances[i]];
+      }
+      break;
+    }
+  }
+}
+
+interface Orientation {
+  w: number;
+  h: number;
+  rotated: boolean;
+}
+
+/**
+ * Two-stage layout matching a tracksaw workflow: first-stage cuts always run
+ * the FULL LENGTH of the sheet (rips), producing strips; panels are then
+ * cross-cut from those strips. Sheets are laid out with length along x.
+ * A panel's alignment fixes its length parallel or perpendicular to the
+ * sheet length; 'any' allows both.
+ */
+function orientations(panel: PanelSpec): Orientation[] {
+  const along: Orientation = { w: panel.length, h: panel.width, rotated: false };
+  const across: Orientation = { w: panel.width, h: panel.length, rotated: true };
+  if (panel.alignment === 'parallel') return [along];
+  if (panel.alignment === 'perpendicular') return [across];
+  if (panel.length === panel.width) return [along];
+  return [along, across];
+}
+
+// ---------------------------------------------------------------------------
+// Greedy packing
+
+interface Strip {
+  y: number;
+  h: number;
+  usedLength: number;
+  /**
+   * Panels in this strip and their rotation. A panel keeps ONE orientation
+   * within a strip (uniform, batch-cuttable runs); other strips — even on
+   * the same sheet — may orient it differently.
+   */
+  rotations: Map<string, boolean>;
+}
+
+interface OpenSheet {
+  spec: StockSpec;
+  strips: Strip[];
+  usedWidth: number;
+  placements: Placement[];
+}
+
+type Score = [number, number, number, number];
+
+function lessThan(a: Score, b: Score): boolean {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
+  }
+  return false;
+}
+
+interface Candidate {
+  sheet: OpenSheet;
+  strip: Strip | null; // null = open a new strip
+  orient: Orientation;
+  score: Score;
+}
+
+function bestFitInSheet(
+  sheet: OpenSheet,
+  orients: Orientation[],
+  kerf: number,
+  cap: number,
+  strategy: Strategy,
+  panelId: string
+): Candidate | null {
+  const { length: sheetL, width: sheetW } = sheet.spec;
+  // Candidate rank before fit quality: same-panel strips come first under any
+  // affinity; 'strict' prefers a fresh strip over joining a mixed one.
+  const catSame = 0;
+  const catOther = strategy.affinity === 'none' ? 0 : strategy.affinity === 'prefer' ? 1 : 2;
+  const catNew = strategy.affinity === 'strict' ? 1 : strategy.affinity === 'prefer' ? 2 : 1;
+  let best: Candidate | null = null;
+
+  for (const orient of orients) {
+    // Existing strips: fit the strip height, remaining length, this strip's
+    // rotation lock for the panel, and the cross-cut rules — a shared strip
+    // gets separating cross cuts (strip height ≤ capacity) and any trim is a
+    // cross cut along the piece (piece width ≤ capacity).
+    for (const strip of sheet.strips) {
+      if (orient.h > strip.h) continue;
+      if (strip.h > cap) continue;
+      if (orient.h < strip.h && orient.w > cap) continue;
+      const locked = strip.rotations.get(panelId);
+      if (locked !== undefined && orient.rotated !== locked) continue;
+      const xStart = strip.usedLength === 0 ? 0 : strip.usedLength + kerf;
+      if (xStart + orient.w > sheetL) continue;
+      const cat = locked !== undefined ? catSame : catOther;
+      const heightWaste = strip.h - orient.h;
+      const leftoverLen = sheetL - (xStart + orient.w);
+      const score: Score =
+        strategy.stripFit === 'height'
+          ? [cat, heightWaste, leftoverLen, 0]
+          : [cat, leftoverLen, heightWaste, 0];
+      if (!best || lessThan(score, best.score)) best = { sheet, strip, orient, score };
+    }
+    // New strip: needs remaining sheet width. A strip taller than the
+    // cross-cut capacity can never be cross cut, so it may only hold a single
+    // panel spanning the full sheet length (no cuts after the rips).
+    const yStart = sheet.usedWidth === 0 ? 0 : sheet.usedWidth + kerf;
+    if (orient.w <= sheetL && yStart + orient.h <= sheetW) {
+      if (orient.h <= cap || orient.w === sheetL) {
+        const heightKey = strategy.newStripPref === 'short' ? orient.h : -orient.h;
+        const score: Score = [catNew, heightKey, sheetL - orient.w, 0];
+        if (!best || lessThan(score, best.score)) best = { sheet, strip: null, orient, score };
+      }
+    }
+  }
+  return best;
+}
+
+function place(c: Candidate, panelId: string, kerf: number): void {
+  const { sheet, orient } = c;
+  let strip = c.strip;
+  if (!strip) {
+    const y = sheet.usedWidth === 0 ? 0 : sheet.usedWidth + kerf;
+    strip = { y, h: orient.h, usedLength: 0, rotations: new Map() };
+    sheet.strips.push(strip);
+    sheet.usedWidth = y + orient.h;
+  }
+  const x = strip.usedLength === 0 ? 0 : strip.usedLength + kerf;
+  sheet.placements.push({ x, y: strip.y, w: orient.w, h: orient.h, panelId, rotated: orient.rotated });
+  strip.usedLength = x + orient.w;
+  strip.rotations.set(panelId, orient.rotated);
+}
+
+// ---------------------------------------------------------------------------
+// Local improvement: relocate/swap placements between strips after the greedy
+// pass. The greedy packer fixes strip heights the moment strips open; these
+// moves let a strip shrink when its tallest occupant finds a better home
+// (e.g. pulling a lone tall panel out of a run of shorter ones).
+
+interface Item {
+  panelId: string;
+  w: number;
+  h: number;
+  rotated: boolean;
+}
+
+interface ISheet {
+  spec: StockSpec;
+  strips: Item[][];
+}
+
+const MAX_IMPROVE_ROUNDS = 40;
+const MAX_IMPROVE_ITEMS = 200;
+const MAX_SWAP_ITEMS = 80;
+
+function stripH(st: Item[]): number {
+  return st.reduce((m, i) => Math.max(m, i.h), 0);
+}
+
+function stripLen(st: Item[], kerf: number): number {
+  return st.reduce((s, i) => s + i.w, 0) + kerf * (st.length - 1);
+}
+
+function stripFeasible(st: Item[], spec: StockSpec, kerf: number, cap: number): boolean {
+  const h = stripH(st);
+  const len = stripLen(st, kerf);
+  if (len > spec.length) return false;
+  const needsSeparating = st.length > 1 || len < spec.length;
+  if (needsSeparating && h > cap) return false;
+  for (const it of st) {
+    if (it.h < h && it.w > cap) return false;
+  }
+  // Rotation lock: same panel, same orientation within a strip.
+  const rot = new Map<string, boolean>();
+  for (const it of st) {
+    const r = rot.get(it.panelId);
+    if (r !== undefined && r !== it.rotated) return false;
+    rot.set(it.panelId, it.rotated);
+  }
+  return true;
+}
+
+function sheetFeasible(sh: ISheet, kerf: number, cap: number): boolean {
+  const used =
+    sh.strips.reduce((s, st) => s + stripH(st), 0) + kerf * (sh.strips.length - 1);
+  if (used > sh.spec.width) return false;
+  return sh.strips.every((st) => st.length > 0 && stripFeasible(st, sh.spec, kerf, cap));
+}
+
+/** Same ordering as scoreResult, minus the components moves cannot change. */
+function improveObjective(layout: ISheet[], kerf: number): number[] {
+  let totalArea = 0;
+  let rips = 0;
+  let crosses = 0;
+  let mix = 0;
+  let sumSq = 0;
+  let stripArea = 0;
+  for (const sh of layout) {
+    const area = sh.spec.length * sh.spec.width;
+    totalArea += area;
+    sumSq += area * area;
+    let y = 0;
+    for (const st of sh.strips) {
+      const h = stripH(st);
+      stripArea += h * sh.spec.length;
+      y += h;
+      if (y < sh.spec.width) rips++;
+      y += kerf;
+      crosses += st.length - 1;
+      if (stripLen(st, kerf) < sh.spec.length) crosses++;
+      for (const it of st) if (it.h < h) crosses++;
+      const kinds = new Set(st.map((i) => i.panelId));
+      if (kinds.size > 1) mix += kinds.size - 1;
+    }
+  }
+  return [totalArea, rips, crosses, mix, sumSq, stripArea];
+}
+
+/** Group same-panel items adjacent, ordered by first appearance. */
+function groupItems(items: Item[]): Item[] {
+  const order = new Map<string, number>();
+  for (const it of items) if (!order.has(it.panelId)) order.set(it.panelId, order.size);
+  return [...items].sort((a, b) => order.get(a.panelId)! - order.get(b.panelId)!);
+}
+
+function insertGrouped(st: Item[], item: Item): void {
+  for (let i = st.length - 1; i >= 0; i--) {
+    if (st[i].panelId === item.panelId) {
+      st.splice(i + 1, 0, item);
+      return;
+    }
+  }
+  st.push(item);
+}
+
+/** Orientations an item may take in a target strip (alignment + strip lock). */
+function orientedItems(spec: PanelSpec, targetStrip: Item[] | null): Item[] {
+  let opts = orientations(spec).map((o) => ({
+    panelId: spec.id,
+    w: o.w,
+    h: o.h,
+    rotated: o.rotated,
+  }));
+  if (targetStrip) {
+    const lock = targetStrip.find((it) => it.panelId === spec.id);
+    if (lock) opts = opts.filter((o) => o.rotated === lock.rotated);
+  }
+  return opts;
+}
+
+function cloneFor(layout: ISheet[], a: number, b: number): ISheet[] {
+  return layout.map((sh, idx) =>
+    idx === a || idx === b ? { spec: sh.spec, strips: sh.strips.map((st) => st.slice()) } : sh
+  );
+}
+
+function pruneAndCheck(
+  clone: ISheet[],
+  touched: number[],
+  kerf: number,
+  cap: number
+): ISheet[] | null {
+  for (const idx of touched) {
+    clone[idx].strips = clone[idx].strips.filter((st) => st.length > 0);
+    if (clone[idx].strips.length > 0 && !sheetFeasible(clone[idx], kerf, cap)) return null;
+  }
+  return clone.filter((sh) => sh.strips.length > 0);
+}
+
+function applyRelocate(
+  layout: ISheet[],
+  a: number,
+  i: number,
+  k: number,
+  b: number,
+  j: number,
+  item: Item,
+  kerf: number,
+  cap: number
+): ISheet[] | null {
+  const clone = cloneFor(layout, a, b);
+  clone[a].strips[i].splice(k, 1);
+  if (j >= clone[b].strips.length) clone[b].strips.push([item]);
+  else insertGrouped(clone[b].strips[j], item);
+  return pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap);
+}
+
+function applySwapVariants(
+  layout: ISheet[],
+  a: number,
+  i: number,
+  k: number,
+  b: number,
+  j: number,
+  l: number,
+  byId: Map<string, PanelSpec>,
+  kerf: number,
+  cap: number
+): ISheet[][] {
+  const p = layout[a].strips[i][k];
+  const q = layout[b].strips[j][l];
+  if (p.panelId === q.panelId) return [];
+  const pSpec = byId.get(p.panelId);
+  const qSpec = byId.get(q.panelId);
+  if (!pSpec || !qSpec) return [];
+  const pOpts = orientedItems(pSpec, layout[b].strips[j].filter((_, idx) => idx !== l));
+  const qOpts = orientedItems(qSpec, layout[a].strips[i].filter((_, idx) => idx !== k));
+  const variants: ISheet[][] = [];
+  for (const po of pOpts) {
+    for (const qo of qOpts) {
+      const clone = cloneFor(layout, a, b);
+      clone[a].strips[i].splice(k, 1);
+      clone[b].strips[j].splice(l, 1);
+      insertGrouped(clone[b].strips[j], po);
+      insertGrouped(clone[a].strips[i], qo);
+      const pruned = pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap);
+      if (pruned) variants.push(pruned);
+    }
+  }
+  return variants;
+}
+
+function findImprovingMove(
+  layout: ISheet[],
+  obj: number[],
+  byId: Map<string, PanelSpec>,
+  kerf: number,
+  cap: number,
+  allowSwaps: boolean
+): { layout: ISheet[]; obj: number[] } | null {
+  for (let a = 0; a < layout.length; a++) {
+    for (let i = 0; i < layout[a].strips.length; i++) {
+      for (let k = 0; k < layout[a].strips[i].length; k++) {
+        const spec = byId.get(layout[a].strips[i][k].panelId);
+        if (!spec) continue;
+
+        // Relocations (including to a brand-new strip on any sheet).
+        for (let b = 0; b < layout.length; b++) {
+          const stripCount = layout[b].strips.length;
+          for (let j = 0; j <= stripCount; j++) {
+            if (a === b && j === i) continue;
+            const target = j < stripCount ? layout[b].strips[j] : null;
+            for (const item of orientedItems(spec, target)) {
+              const cand = applyRelocate(layout, a, i, k, b, j, item, kerf, cap);
+              if (!cand) continue;
+              const candObj = improveObjective(cand, kerf);
+              if (compareScores(candObj, obj) < 0) return { layout: cand, obj: candObj };
+            }
+          }
+        }
+
+        if (!allowSwaps) continue;
+        // Swaps with every placement strictly after (a, i, k).
+        for (let b = a; b < layout.length; b++) {
+          const jStart = b === a ? i + 1 : 0;
+          for (let j = jStart; j < layout[b].strips.length; j++) {
+            for (let l = 0; l < layout[b].strips[j].length; l++) {
+              for (const cand of applySwapVariants(layout, a, i, k, b, j, l, byId, kerf, cap)) {
+                const candObj = improveObjective(cand, kerf);
+                if (compareScores(candObj, obj) < 0) return { layout: cand, obj: candObj };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function improve(layout: ISheet[], byId: Map<string, PanelSpec>, kerf: number, cap: number): ISheet[] {
+  const itemCount = layout.reduce((s, sh) => s + sh.strips.reduce((t, st) => t + st.length, 0), 0);
+  if (itemCount === 0 || itemCount > MAX_IMPROVE_ITEMS) return layout;
+  const allowSwaps = itemCount <= MAX_SWAP_ITEMS;
+  let current = layout;
+  let obj = improveObjective(current, kerf);
+  for (let round = 0; round < MAX_IMPROVE_ROUNDS; round++) {
+    const next = findImprovingMove(current, obj, byId, kerf, cap, allowSwaps);
+    if (!next) break;
+    current = next.layout;
+    obj = next.obj;
+  }
+  return current;
+}
+
+// ---------------------------------------------------------------------------
+
+export function optimize(
+  panels: PanelSpec[],
+  stock: StockSpec[],
+  options: Options,
+  strategy: Strategy = DEFAULT_STRATEGY
+): OptimizeResult {
+  const kerf = Math.max(0, options.kerf || 0);
+  const cap = options.crossCutCap > 0 ? options.crossCutCap : Infinity;
+
+  const instances = panels
+    .filter((p) => p.enabled && p.qty > 0 && p.length > 0 && p.width > 0)
+    .flatMap((p) => Array.from({ length: p.qty }, () => p));
+
+  sortInstances(instances, strategy);
+
+  const stockPool = stock
+    .filter((s) => s.enabled && s.qty > 0 && s.length > 0 && s.width > 0)
+    .map((s) => ({ spec: s, remaining: s.qty }));
+
+  const open: OpenSheet[] = [];
+  const unplaced = new Map<string, number>();
+  let unplacedArea = 0;
+  let placedCount = 0;
+  let totalPanelArea = 0;
+
+  const specArea = (s: StockSpec) => s.length * s.width;
+  const markUnplaced = (panel: PanelSpec) => {
+    unplaced.set(panel.id, (unplaced.get(panel.id) ?? 0) + 1);
+    unplacedArea += panel.length * panel.width;
+  };
+
+  for (const panel of instances) {
+    const orients = orientations(panel);
+
+    // Best fit among open sheets; under 'smallFirst', a smaller open sheet
+    // beats a better fit on a larger one.
+    let bestOpen: Candidate | null = null;
+    for (const sheet of open) {
+      const c = bestFitInSheet(sheet, orients, kerf, cap, strategy, panel.id);
+      if (!c) continue;
+      if (!bestOpen) {
+        bestOpen = c;
+      } else if (strategy.stockPolicy === 'smallFirst') {
+        const ca = specArea(c.sheet.spec);
+        const ba = specArea(bestOpen.sheet.spec);
+        if (ca < ba || (ca === ba && lessThan(c.score, bestOpen.score))) bestOpen = c;
+      } else if (lessThan(c.score, bestOpen.score)) {
+        bestOpen = c;
+      }
+    }
+
+    // Smallest unopened stock sheet the panel is cuttable from.
+    let chosenStock: { spec: StockSpec; remaining: number } | null = null;
+    for (const s of stockPool) {
+      if (s.remaining <= 0) continue;
+      const fits = orients.some(
+        (o) =>
+          o.w <= s.spec.length &&
+          o.h <= s.spec.width &&
+          (o.h <= cap || o.w === s.spec.length)
+      );
+      if (!fits) continue;
+      if (!chosenStock || specArea(s.spec) < specArea(chosenStock.spec)) chosenStock = s;
+    }
+
+    let openNew = !bestOpen;
+    if (
+      bestOpen &&
+      chosenStock &&
+      strategy.stockPolicy === 'smallFirst' &&
+      specArea(chosenStock.spec) < specArea(bestOpen.sheet.spec)
+    ) {
+      openNew = true;
+    }
+
+    let best = bestOpen;
+    if (openNew) {
+      if (!chosenStock) {
+        markUnplaced(panel);
+        continue;
+      }
+      chosenStock.remaining--;
+      const sheet: OpenSheet = { spec: chosenStock.spec, strips: [], usedWidth: 0, placements: [] };
+      open.push(sheet);
+      best = bestFitInSheet(sheet, orients, kerf, cap, strategy, panel.id);
+      if (!best) {
+        open.pop();
+        chosenStock.remaining++;
+        markUnplaced(panel);
+        continue;
+      }
+    }
+
+    place(best!, panel.id, kerf);
+    placedCount++;
+    totalPanelArea += panel.length * panel.width;
+  }
+
+  // Local improvement on the nested strip model, then rebuild placements.
+  const byId = new Map(panels.map((p) => [p.id, p] as const));
+  let layout: ISheet[] = open
+    .filter((sh) => sh.placements.length > 0)
+    .map((sh) => ({
+      spec: sh.spec,
+      strips: [...sh.strips]
+        .sort((a, b) => a.y - b.y)
+        .map((st) =>
+          groupItems(
+            sh.placements
+              .filter((p) => p.y === st.y)
+              .sort((a, b) => a.x - b.x)
+              .map((p) => ({ panelId: p.panelId, w: p.w, h: p.h, rotated: p.rotated }))
+          )
+        ),
+    }));
+  layout = improve(layout, byId, kerf, cap);
+
+  const sheets: SheetResult[] = layout.map((sh) => {
+    const placements: Placement[] = [];
+    const strips: StripResult[] = [];
+    let y = 0;
+    for (const st of sh.strips) {
+      const h = stripH(st);
+      let x = 0;
+      for (const it of st) {
+        placements.push({ x, y, w: it.w, h: it.h, panelId: it.panelId, rotated: it.rotated });
+        x += it.w + kerf;
+      }
+      strips.push({ y, h });
+      y += h + kerf;
+    }
+    return {
+      stockId: sh.spec.id,
+      length: sh.spec.length,
+      width: sh.spec.width,
+      placements,
+      strips,
+    };
+  });
+
+  const totalSheetArea = sheets.reduce((sum, s) => sum + s.length * s.width, 0);
+  const stripArea = sheets.reduce(
+    (sum, s) => sum + s.strips.reduce((a, t) => a + t.h * s.length, 0),
+    0
+  );
+
+  return { sheets, unplaced, unplacedArea, placedCount, totalPanelArea, totalSheetArea, stripArea };
+}

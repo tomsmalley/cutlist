@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cut</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>cut</div>
+      <div class="project-controls">
+        <input id="project-name" type="text" spellcheck="false" autocomplete="off"
+               placeholder="untitled project" title="Project name" />
+        <span id="save-indicator" class="save-indicator"></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="project-save" class="btn ghost" title="Save project as a JSON file">Save</button>
+        <button id="project-load" class="btn ghost" title="Load a project from a JSON file">Load</button>
+        <input id="project-file" type="file" accept=".json,application/json" hidden />
+        <button id="calculate" class="btn primary">Calculate</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <section class="card" id="panels-section">
+          <h2 class="card-title">Panels</h2>
+          <table class="grid">
+            <thead>
+              <tr><th class="drag-col"></th><th>Name</th><th>Length</th><th>Width</th><th>Qty</th><th class="actions-col"></th></tr>
+            </thead>
+            <tbody id="panels-tbody"></tbody>
+          </table>
+          <button id="add-panel" class="btn add-row">+ Add panel</button>
+        </section>
+
+        <section class="card" id="stock-section">
+          <h2 class="card-title">Stock sheets</h2>
+          <table class="grid">
+            <thead>
+              <tr><th class="drag-col"></th><th>Length</th><th>Width</th><th>Qty</th><th class="actions-col"></th></tr>
+            </thead>
+            <tbody id="stock-tbody"></tbody>
+          </table>
+          <button id="add-stock" class="btn add-row">+ Add stock sheet</button>
+        </section>
+
+        <section class="card" id="options-section">
+          <h2 class="card-title">Options</h2>
+          <div class="options-body">
+            <label class="option-row">
+              <span>Cut / blade / kerf thickness</span>
+              <span class="option-value"><input id="opt-kerf" type="number" min="0" step="0.1" /><em>mm</em></span>
+            </label>
+            <label class="option-row">
+              <span>Cross cut capacity</span>
+              <span class="option-value"><input id="opt-crosscap" type="number" min="0" step="10" /><em>mm</em></span>
+            </label>
+          </div>
+        </section>
+      </aside>
+
+      <section class="results" id="results">
+        <div class="results-empty">Add panels and stock sheets, then press <b>Calculate</b>.</div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
