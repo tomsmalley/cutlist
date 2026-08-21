@@ -697,6 +697,105 @@ tr.row-disabled .align {
   display: inline-block;
 }
 
+/* ----------------------------------------------------------------- print */
+
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  html,
+  body {
+    height: auto;
+    background: #fff;
+  }
+
+  body {
+    display: block;
+  }
+
+  /* The app chrome goes; the top bar becomes a plain document header. */
+  .sidebar,
+  .topbar-actions,
+  .save-indicator {
+    display: none !important;
+  }
+
+  .topbar {
+    background: none;
+    border-bottom: 2px solid #21201c;
+    padding: 0 0 8px;
+  }
+
+  .brand {
+    font-size: 16px;
+  }
+
+  #project-name {
+    border: none;
+    background: none;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 0;
+    max-width: none;
+    flex: 1;
+  }
+
+  /* Let the document flow across pages instead of scrolling. */
+  .layout {
+    display: block;
+  }
+
+  .results {
+    overflow: visible;
+    height: auto;
+    padding: 12px 0 0;
+  }
+
+  .results.calculating {
+    opacity: 1;
+  }
+
+  .stats-bar {
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .stat {
+    padding: 6px 10px;
+    min-width: 0;
+    border-color: #bbb;
+  }
+
+  .stat-value {
+    font-size: 15px;
+  }
+
+  .sheet-card {
+    max-width: none;
+    border-color: #999;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 14px;
+  }
+
+  .cutlist {
+    font-size: 12px;
+  }
+
+  /* Hover machinery has no business on paper. */
+  .hit-line,
+  .dim-scrim,
+  .piece-glow {
+    display: none;
+  }
+}
+
 /* --------------------------------------------------------------- narrow */
 
 @media (max-width: 900px) {
