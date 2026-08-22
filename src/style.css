@@ -704,15 +704,54 @@ tr.row-disabled .align {
     margin: 12mm;
   }
 
-  * {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
   html,
   body {
     height: auto;
     background: #fff;
+  }
+
+  /* Black & white, ink-frugal diagrams: white sheets, outlined panels
+     (names and dimensions identify them), cuts distinguished by dash
+     weight rather than colour. */
+  .sheet-bg {
+    fill: #fff;
+  }
+
+  .placed {
+    fill: #fff;
+    stroke: #000;
+  }
+
+  .sheet-border {
+    stroke: #000;
+  }
+
+  .rip-line {
+    stroke: #000;
+    stroke-width: 1.6;
+    stroke-dasharray: 9 5;
+    opacity: 1;
+  }
+
+  .cross-line {
+    stroke: #000;
+    stroke-width: 0.8;
+    stroke-dasharray: 3 2.5;
+    opacity: 0.8;
+  }
+
+  .dim-label,
+  .tag-label {
+    fill: #000;
+  }
+
+  .waste-label {
+    fill: #777;
+  }
+
+  /* Colour chips mean nothing without fills. */
+  .legend {
+    display: none;
   }
 
   body {
@@ -762,18 +801,7 @@ tr.row-disabled .align {
   }
 
   .stats-bar {
-    gap: 8px;
-    margin-bottom: 12px;
-  }
-
-  .stat {
-    padding: 6px 10px;
-    min-width: 0;
-    border-color: #bbb;
-  }
-
-  .stat-value {
-    font-size: 15px;
+    display: none;
   }
 
   .sheet-card {
