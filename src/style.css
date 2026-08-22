@@ -700,14 +700,21 @@ tr.row-disabled .align {
 /* ----------------------------------------------------------------- print */
 
 @media print {
+  /* Zero page margins leave no room for the browser's own header/footer
+     (title, URL, page numbers, timestamp), suppressing them; body padding
+     stands in as the page margin. */
   @page {
-    margin: 12mm;
+    margin: 0;
   }
 
   html,
   body {
     height: auto;
     background: #fff;
+  }
+
+  body {
+    padding: 10mm 12mm;
   }
 
   /* Black & white, ink-frugal diagrams: white sheets, outlined panels
@@ -772,7 +779,7 @@ tr.row-disabled .align {
   }
 
   .brand {
-    font-size: 16px;
+    display: none;
   }
 
   #project-name {
