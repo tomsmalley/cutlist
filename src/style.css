@@ -705,7 +705,7 @@ tr.row-disabled .align {
      furniture (disable "headers and footers" in the print dialog if yours
      doesn't). */
   @page {
-    margin: 10mm;
+    margin: 15mm;
   }
 
   html,
