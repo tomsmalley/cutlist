@@ -21,7 +21,7 @@ Each calculation runs a **time-budgeted search** in a Web Worker, so the UI
 never blocks: all 96 combinations of the packer's heuristic knobs (placement
 orders, strip-fit rules, orientation preferences, stock policies, like-panel
 affinities) always run — and render an interim result immediately — then
-seeded random restarts keep coming for up to ~2 seconds, stopping early once
+seeded random restarts keep coming for up to ~10 seconds, stopping early once
 hundreds of candidates in a row fail to improve. Each candidate is refined
 by a local-improvement pass that
 relocates and swaps panels between strips (letting strips shrink when a tall

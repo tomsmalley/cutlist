@@ -9,7 +9,7 @@ import type { OptimizeResult, Strategy } from './optimizer';
 import type { CalcRequest, CalcResponse, SerializedResult } from './messages';
 
 /** How long to keep exploring random restarts after the deterministic pass. */
-const TIME_BUDGET_MS = 2000;
+const TIME_BUDGET_MS = 10000;
 /** Stop early once this many candidates in a row fail to beat the best. */
 const STALE_LIMIT = 512;
 /** Candidates between yields back to the message queue (abort checks). */
