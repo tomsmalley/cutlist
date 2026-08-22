@@ -68,6 +68,9 @@ const SWAP_ICON = alignIcon(
   '<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>'
 );
 
+const CHECK_ICON = alignIcon('<polyline points="20 6 9 17 4 12"/>');
+const X_ICON = alignIcon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>');
+
 const GRIP_ICON =
   '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true">' +
   '<circle cx="9" cy="5" r="1.8"/><circle cx="9" cy="12" r="1.8"/><circle cx="9" cy="19" r="1.8"/>' +
@@ -102,8 +105,8 @@ function rowHtml(
       <td class="actions-col">
         ${swapBtn}
         ${alignBtn}
-        <button class="icon-btn enable ${item.enabled ? 'on' : ''}" data-action="enable" title="${item.enabled ? 'Exclude from calculation' : 'Include in calculation'}">&#10003;</button>
-        <button class="icon-btn delete" data-action="delete" title="Remove row">&#10005;</button>
+        <button class="icon-btn enable ${item.enabled ? 'on' : ''}" data-action="enable" title="${item.enabled ? 'Exclude from calculation' : 'Include in calculation'}">${CHECK_ICON}</button>
+        <button class="icon-btn delete" data-action="delete" title="Remove row">${X_ICON}</button>
       </td>
     </tr>`;
 }
