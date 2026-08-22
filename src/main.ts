@@ -380,10 +380,18 @@ worker.onmessage = (e: MessageEvent<CalcResponse>) => {
   const msg = e.data;
   if (msg.runId !== runSeq) return; // stale run superseded by newer input
   if (msg.type === 'progress') {
+    calcBtn.classList.add('busy');
     calcBtn.textContent = `Calculating… ${Math.round((100 * msg.done) / msg.total)}%`;
     return;
   }
-  finishRun();
+  // Interim results render right away; the button stays busy until the
+  // time-budgeted search delivers its final answer.
+  window.clearTimeout(slowTimer);
+  resultsEl.classList.remove('calculating');
+  if (msg.final) {
+    calcBtn.innerHTML = calcBtnHtml;
+    calcBtn.classList.remove('busy');
+  }
   const result: OptimizeResult = { ...msg.result, unplaced: new Map(msg.result.unplaced) };
   renderResults(resultsEl, result, project.panels, project.options.kerf, msg.tried);
 };

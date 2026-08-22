@@ -15,4 +15,4 @@ export type SerializedResult = Omit<OptimizeResult, 'unplaced'> & {
 
 export type CalcResponse =
   | { type: 'progress'; runId: number; done: number; total: number }
-  | { type: 'result'; runId: number; tried: number; result: SerializedResult };
+  | { type: 'result'; runId: number; tried: number; final: boolean; result: SerializedResult };

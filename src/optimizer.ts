@@ -70,9 +70,8 @@ export const DEFAULT_STRATEGY: Strategy = {
   affinity: 'prefer',
 };
 
-const RANDOM_RESTARTS = 32;
-
-export function generateStrategies(): Strategy[] {
+/** Every combination of the packer's discrete heuristic knobs (96 in all). */
+export function deterministicStrategies(): Strategy[] {
   const strategies: Strategy[] = [];
   for (const order of ['maxdim', 'area', 'width', 'length'] as const) {
     for (const newStripPref of ['short', 'tall'] as const) {
@@ -85,17 +84,19 @@ export function generateStrategies(): Strategy[] {
       }
     }
   }
-  for (let seed = 1; seed <= RANDOM_RESTARTS; seed++) {
-    strategies.push({
-      order: 'shuffle',
-      seed,
-      newStripPref: seed % 2 === 0 ? 'short' : 'tall',
-      stripFit: (seed >> 1) % 2 === 0 ? 'height' : 'length',
-      stockPolicy: (seed >> 2) % 2 === 0 ? 'fill' : 'smallFirst',
-      affinity: (['none', 'prefer', 'strict'] as const)[seed % 3],
-    });
-  }
   return strategies;
+}
+
+/** A seeded random-restart strategy; the search draws these until its time budget runs out. */
+export function shuffleStrategy(seed: number): Strategy {
+  return {
+    order: 'shuffle',
+    seed,
+    newStripPref: seed % 2 === 0 ? 'short' : 'tall',
+    stripFit: (seed >> 1) % 2 === 0 ? 'height' : 'length',
+    stockPolicy: (seed >> 2) % 2 === 0 ? 'fill' : 'smallFirst',
+    affinity: (['none', 'prefer', 'strict'] as const)[seed % 3],
+  };
 }
 
 /**
