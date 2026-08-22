@@ -1,6 +1,9 @@
 import type { OptimizeResult } from './optimizer';
 import type { PanelSpec } from './types';
 
+/** Leftovers narrower than this (mm) are sheer waste, not reusable offcuts. */
+const MIN_OFFCUT = 60;
+
 const PALETTE = [
   '#8ecae6', '#ffb703', '#a7c957', '#e5989b', '#bde0fe',
   '#f4a261', '#cdb4db', '#90be6d', '#f9c74f', '#adb5bd',
@@ -124,6 +127,8 @@ export function renderResults(
     // Offcut dimensions, written into the waste space when it's big enough:
     // the tail of each strip past its last panel, and the untouched band
     // below the last strip (one kerf is consumed by the separating cut).
+    // Anything narrower than MIN_OFFCUT is not worth keeping and stays
+    // unlabelled.
     const offcuts: { x: number; y: number; w: number; h: number }[] = [];
     for (const strip of sheet.strips) {
       const items = sheet.placements.filter((p) => p.y === strip.y);
@@ -147,6 +152,7 @@ export function renderResults(
       }
     }
     for (const o of offcuts) {
+      if (Math.min(o.w, o.h) < MIN_OFFCUT) continue;
       const dims = `${fmt(o.w)} × ${fmt(o.h)}`;
       const vertical = o.h > o.w * 1.6;
       const along = vertical ? o.h : o.w;
@@ -236,7 +242,7 @@ export function renderResults(
           if (r.h < strip.h) {
             const trimOff = strip.h - r.h - kerf;
             const offNote =
-              trimOff > 0
+              Math.min(r.w, trimOff) >= MIN_OFFCUT
                 ? `<li class="offcut-note" data-cut="">offcut ${r.count > 1 ? `${r.count} × ` : ''}${fmt(r.w)} × ${fmt(trimOff)}</li>`
                 : '';
             li += `<ol><li data-cut="t${i}-${si}-${ri}">Cross cut ${r.count === 1 ? 'it' : 'each'} down to <b>${fmt(r.h)}</b>.</li>${offNote}</ol>`;
@@ -244,7 +250,7 @@ export function renderResults(
           inner += `<li data-cut="c${i}-${si}-${ri}">${li}</li>`;
         });
         const offW = sheet.length - lastEdge - kerf;
-        if (!flush && offW > 0) {
+        if (!flush && Math.min(offW, strip.h) >= MIN_OFFCUT) {
           inner += `<li class="offcut-note" data-cut="">offcut ${fmt(offW)} × ${fmt(strip.h)}</li>`;
         }
       }
