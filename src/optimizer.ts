@@ -1,4 +1,5 @@
 import type { Options, PanelSpec, StockSpec } from './types';
+import { RIP_OVERSIZE } from './types';
 
 export interface Placement {
   x: number;
@@ -211,8 +212,15 @@ function orientations(panel: PanelSpec): Orientation[] {
 
 interface Strip {
   y: number;
+  /** Nominal height: the tallest FINISHED piece. Oversized strips occupy os more. */
   h: number;
   usedLength: number;
+  /**
+   * Ripped RIP_OVERSIZE over nominal height; every piece in the strip is then
+   * trimmed to final size at the cross-cut station. Fixed when the strip is
+   * opened: only trimmable pieces (which keep the flag true) may join.
+   */
+  oversized: boolean;
   /**
    * Panels in this strip and their rotation. A panel keeps ONE orientation
    * within a strip (uniform, batch-cuttable runs); other strips — even on
@@ -241,7 +249,18 @@ interface Candidate {
   sheet: OpenSheet;
   strip: Strip | null; // null = open a new strip
   orient: Orientation;
+  /** For a new strip: whether it is ripped oversized. */
+  oversized: boolean;
   score: Score;
+}
+
+/**
+ * Whether a piece can live in an oversized strip: its trim cut (along its
+ * length) and the strip's separating cuts (across the oversized height) must
+ * both fit the cross-cut capacity.
+ */
+function oversizable(orient: Orientation, os: number, cap: number): boolean {
+  return os > 0 && orient.w <= cap && orient.h + os <= cap;
 }
 
 function bestFitInSheet(
@@ -249,6 +268,7 @@ function bestFitInSheet(
   orients: Orientation[],
   kerf: number,
   cap: number,
+  os: number,
   strategy: Strategy,
   panelId: string
 ): Candidate | null {
@@ -267,8 +287,12 @@ function bestFitInSheet(
     // cross cut along the piece (piece width ≤ capacity).
     for (const strip of sheet.strips) {
       if (orient.h > strip.h) continue;
-      if (strip.h > cap) continue;
-      if (orient.h < strip.h && orient.w > cap) continue;
+      if (strip.h + (strip.oversized ? os : 0) > cap) continue;
+      const trimmed = strip.oversized || orient.h < strip.h;
+      if (trimmed && orient.w > cap) continue;
+      // An untrimmed edge on a trimmable piece defeats the option: such a
+      // piece belongs in an oversized strip, never flush in an exact one.
+      if (!trimmed && oversizable(orient, os, cap)) continue;
       const locked = strip.rotations.get(panelId);
       if (locked !== undefined && orient.rotated !== locked) continue;
       const xStart = strip.usedLength === 0 ? 0 : strip.usedLength + kerf;
@@ -280,31 +304,35 @@ function bestFitInSheet(
         strategy.stripFit === 'height'
           ? [cat, heightWaste, leftoverLen, 0]
           : [cat, leftoverLen, heightWaste, 0];
-      if (!best || lessThan(score, best.score)) best = { sheet, strip, orient, score };
+      if (!best || lessThan(score, best.score))
+        best = { sheet, strip, orient, oversized: strip.oversized, score };
     }
-    // New strip: needs remaining sheet width. A strip taller than the
-    // cross-cut capacity can never be cross cut, so it may only hold a single
-    // panel spanning the full sheet length (no cuts after the rips).
+    // New strip: needs remaining sheet width. A trimmable piece opens an
+    // oversized strip; otherwise a strip taller than the cross-cut capacity
+    // can never be cross cut, so it may only hold a single panel spanning the
+    // full sheet length (no cuts after the rips).
+    const canOs = oversizable(orient, os, cap);
     const yStart = sheet.usedWidth === 0 ? 0 : sheet.usedWidth + kerf;
-    if (orient.w <= sheetL && yStart + orient.h <= sheetW) {
-      if (orient.h <= cap || orient.w === sheetL) {
+    if (orient.w <= sheetL && yStart + orient.h + (canOs ? os : 0) <= sheetW) {
+      if (canOs || orient.h <= cap || orient.w === sheetL) {
         const heightKey = strategy.newStripPref === 'short' ? orient.h : -orient.h;
         const score: Score = [catNew, heightKey, sheetL - orient.w, 0];
-        if (!best || lessThan(score, best.score)) best = { sheet, strip: null, orient, score };
+        if (!best || lessThan(score, best.score))
+          best = { sheet, strip: null, orient, oversized: canOs, score };
       }
     }
   }
   return best;
 }
 
-function place(c: Candidate, panelId: string, kerf: number): void {
+function place(c: Candidate, panelId: string, kerf: number, os: number): void {
   const { sheet, orient } = c;
   let strip = c.strip;
   if (!strip) {
     const y = sheet.usedWidth === 0 ? 0 : sheet.usedWidth + kerf;
-    strip = { y, h: orient.h, usedLength: 0, rotations: new Map() };
+    strip = { y, h: orient.h, usedLength: 0, oversized: c.oversized, rotations: new Map() };
     sheet.strips.push(strip);
-    sheet.usedWidth = y + orient.h;
+    sheet.usedWidth = y + orient.h + (c.oversized ? os : 0);
   }
   const x = strip.usedLength === 0 ? 0 : strip.usedLength + kerf;
   sheet.placements.push({ x, y: strip.y, w: orient.w, h: orient.h, panelId, rotated: orient.rotated });
@@ -338,18 +366,32 @@ function stripH(st: Item[]): number {
   return st.reduce((m, i) => Math.max(m, i.h), 0);
 }
 
+/**
+ * Physical (ripped) strip height: nominal plus the oversize allowance when
+ * the strip qualifies — every piece trimmable and the oversized height still
+ * cross-cuttable. Matches how the greedy packer sets Strip.oversized, so the
+ * flag never needs carrying through improvement moves.
+ */
+function stripPhysH(st: Item[], os: number, cap: number): number {
+  const h = stripH(st);
+  const over = os > 0 && h + os <= cap && st.every((it) => it.w <= cap);
+  return h + (over ? os : 0);
+}
+
 function stripLen(st: Item[], kerf: number): number {
   return st.reduce((s, i) => s + i.w, 0) + kerf * (st.length - 1);
 }
 
-function stripFeasible(st: Item[], spec: StockSpec, kerf: number, cap: number): boolean {
-  const h = stripH(st);
+function stripFeasible(st: Item[], spec: StockSpec, kerf: number, cap: number, os: number): boolean {
+  const physH = stripPhysH(st, os, cap);
   const len = stripLen(st, kerf);
   if (len > spec.length) return false;
   const needsSeparating = st.length > 1 || len < spec.length;
-  if (needsSeparating && h > cap) return false;
+  if (needsSeparating && physH > cap) return false;
   for (const it of st) {
-    if (it.h < h && it.w > cap) return false;
+    if (it.h < physH && it.w > cap) return false;
+    // Trimmable pieces must actually be trimmed (see bestFitInSheet).
+    if (it.h >= physH && os > 0 && it.w <= cap && it.h + os <= cap) return false;
   }
   // Rotation lock: same panel, same orientation within a strip.
   const rot = new Map<string, boolean>();
@@ -361,15 +403,15 @@ function stripFeasible(st: Item[], spec: StockSpec, kerf: number, cap: number): 
   return true;
 }
 
-function sheetFeasible(sh: ISheet, kerf: number, cap: number): boolean {
+function sheetFeasible(sh: ISheet, kerf: number, cap: number, os: number): boolean {
   const used =
-    sh.strips.reduce((s, st) => s + stripH(st), 0) + kerf * (sh.strips.length - 1);
+    sh.strips.reduce((s, st) => s + stripPhysH(st, os, cap), 0) + kerf * (sh.strips.length - 1);
   if (used > sh.spec.width) return false;
-  return sh.strips.every((st) => st.length > 0 && stripFeasible(st, sh.spec, kerf, cap));
+  return sh.strips.every((st) => st.length > 0 && stripFeasible(st, sh.spec, kerf, cap, os));
 }
 
 /** Same ordering as scoreResult, minus the components moves cannot change. */
-function improveObjective(layout: ISheet[], kerf: number): number[] {
+function improveObjective(layout: ISheet[], kerf: number, cap: number, os: number): number[] {
   let totalArea = 0;
   let rips = 0;
   let crosses = 0;
@@ -382,7 +424,7 @@ function improveObjective(layout: ISheet[], kerf: number): number[] {
     sumSq += area * area;
     let y = 0;
     for (const st of sh.strips) {
-      const h = stripH(st);
+      const h = stripPhysH(st, os, cap);
       stripArea += h * sh.spec.length;
       y += h;
       if (y < sh.spec.width) rips++;
@@ -439,11 +481,12 @@ function pruneAndCheck(
   clone: ISheet[],
   touched: number[],
   kerf: number,
-  cap: number
+  cap: number,
+  os: number
 ): ISheet[] | null {
   for (const idx of touched) {
     clone[idx].strips = clone[idx].strips.filter((st) => st.length > 0);
-    if (clone[idx].strips.length > 0 && !sheetFeasible(clone[idx], kerf, cap)) return null;
+    if (clone[idx].strips.length > 0 && !sheetFeasible(clone[idx], kerf, cap, os)) return null;
   }
   return clone.filter((sh) => sh.strips.length > 0);
 }
@@ -457,13 +500,14 @@ function applyRelocate(
   j: number,
   item: Item,
   kerf: number,
-  cap: number
+  cap: number,
+  os: number
 ): ISheet[] | null {
   const clone = cloneFor(layout, a, b);
   clone[a].strips[i].splice(k, 1);
   if (j >= clone[b].strips.length) clone[b].strips.push([item]);
   else insertGrouped(clone[b].strips[j], item);
-  return pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap);
+  return pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap, os);
 }
 
 function applySwapVariants(
@@ -476,7 +520,8 @@ function applySwapVariants(
   l: number,
   byId: Map<string, PanelSpec>,
   kerf: number,
-  cap: number
+  cap: number,
+  os: number
 ): ISheet[][] {
   const p = layout[a].strips[i][k];
   const q = layout[b].strips[j][l];
@@ -494,7 +539,7 @@ function applySwapVariants(
       clone[b].strips[j].splice(l, 1);
       insertGrouped(clone[b].strips[j], po);
       insertGrouped(clone[a].strips[i], qo);
-      const pruned = pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap);
+      const pruned = pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap, os);
       if (pruned) variants.push(pruned);
     }
   }
@@ -507,6 +552,7 @@ function findImprovingMove(
   byId: Map<string, PanelSpec>,
   kerf: number,
   cap: number,
+  os: number,
   allowSwaps: boolean
 ): { layout: ISheet[]; obj: number[] } | null {
   for (let a = 0; a < layout.length; a++) {
@@ -522,9 +568,9 @@ function findImprovingMove(
             if (a === b && j === i) continue;
             const target = j < stripCount ? layout[b].strips[j] : null;
             for (const item of orientedItems(spec, target)) {
-              const cand = applyRelocate(layout, a, i, k, b, j, item, kerf, cap);
+              const cand = applyRelocate(layout, a, i, k, b, j, item, kerf, cap, os);
               if (!cand) continue;
-              const candObj = improveObjective(cand, kerf);
+              const candObj = improveObjective(cand, kerf, cap, os);
               if (compareScores(candObj, obj) < 0) return { layout: cand, obj: candObj };
             }
           }
@@ -536,8 +582,8 @@ function findImprovingMove(
           const jStart = b === a ? i + 1 : 0;
           for (let j = jStart; j < layout[b].strips.length; j++) {
             for (let l = 0; l < layout[b].strips[j].length; l++) {
-              for (const cand of applySwapVariants(layout, a, i, k, b, j, l, byId, kerf, cap)) {
-                const candObj = improveObjective(cand, kerf);
+              for (const cand of applySwapVariants(layout, a, i, k, b, j, l, byId, kerf, cap, os)) {
+                const candObj = improveObjective(cand, kerf, cap, os);
                 if (compareScores(candObj, obj) < 0) return { layout: cand, obj: candObj };
               }
             }
@@ -549,14 +595,20 @@ function findImprovingMove(
   return null;
 }
 
-function improve(layout: ISheet[], byId: Map<string, PanelSpec>, kerf: number, cap: number): ISheet[] {
+function improve(
+  layout: ISheet[],
+  byId: Map<string, PanelSpec>,
+  kerf: number,
+  cap: number,
+  os: number
+): ISheet[] {
   const itemCount = layout.reduce((s, sh) => s + sh.strips.reduce((t, st) => t + st.length, 0), 0);
   if (itemCount === 0 || itemCount > MAX_IMPROVE_ITEMS) return layout;
   const allowSwaps = itemCount <= MAX_SWAP_ITEMS;
   let current = layout;
-  let obj = improveObjective(current, kerf);
+  let obj = improveObjective(current, kerf, cap, os);
   for (let round = 0; round < MAX_IMPROVE_ROUNDS; round++) {
-    const next = findImprovingMove(current, obj, byId, kerf, cap, allowSwaps);
+    const next = findImprovingMove(current, obj, byId, kerf, cap, os, allowSwaps);
     if (!next) break;
     current = next.layout;
     obj = next.obj;
@@ -574,6 +626,7 @@ export function optimize(
 ): OptimizeResult {
   const kerf = Math.max(0, options.kerf || 0);
   const cap = options.crossCutCap > 0 ? options.crossCutCap : Infinity;
+  const os = options.ripOversized ? RIP_OVERSIZE : 0;
 
   const instances = panels
     .filter((p) => p.enabled && p.qty > 0 && p.length > 0 && p.width > 0)
@@ -604,7 +657,7 @@ export function optimize(
     // beats a better fit on a larger one.
     let bestOpen: Candidate | null = null;
     for (const sheet of open) {
-      const c = bestFitInSheet(sheet, orients, kerf, cap, strategy, panel.id);
+      const c = bestFitInSheet(sheet, orients, kerf, cap, os, strategy, panel.id);
       if (!c) continue;
       if (!bestOpen) {
         bestOpen = c;
@@ -621,12 +674,14 @@ export function optimize(
     let chosenStock: { spec: StockSpec; remaining: number } | null = null;
     for (const s of stockPool) {
       if (s.remaining <= 0) continue;
-      const fits = orients.some(
-        (o) =>
+      const fits = orients.some((o) => {
+        const canOs = oversizable(o, os, cap);
+        return (
           o.w <= s.spec.length &&
-          o.h <= s.spec.width &&
-          (o.h <= cap || o.w === s.spec.length)
-      );
+          o.h + (canOs ? os : 0) <= s.spec.width &&
+          (canOs || o.h <= cap || o.w === s.spec.length)
+        );
+      });
       if (!fits) continue;
       if (!chosenStock || specArea(s.spec) < specArea(chosenStock.spec)) chosenStock = s;
     }
@@ -650,7 +705,7 @@ export function optimize(
       chosenStock.remaining--;
       const sheet: OpenSheet = { spec: chosenStock.spec, strips: [], usedWidth: 0, placements: [] };
       open.push(sheet);
-      best = bestFitInSheet(sheet, orients, kerf, cap, strategy, panel.id);
+      best = bestFitInSheet(sheet, orients, kerf, cap, os, strategy, panel.id);
       if (!best) {
         open.pop();
         chosenStock.remaining++;
@@ -659,7 +714,7 @@ export function optimize(
       }
     }
 
-    place(best!, panel.id, kerf);
+    place(best!, panel.id, kerf, os);
     placedCount++;
     totalPanelArea += panel.length * panel.width;
   }
@@ -681,14 +736,16 @@ export function optimize(
           )
         ),
     }));
-  layout = improve(layout, byId, kerf, cap);
+  layout = improve(layout, byId, kerf, cap, os);
 
+  // Result strips carry PHYSICAL (ripped) heights; pieces keep finished
+  // sizes, so oversized strips show every piece trimmed down (h < strip.h).
   const sheets: SheetResult[] = layout.map((sh) => {
     const placements: Placement[] = [];
     const strips: StripResult[] = [];
     let y = 0;
     for (const st of sh.strips) {
-      const h = stripH(st);
+      const h = stripPhysH(st, os, cap);
       let x = 0;
       for (const it of st) {
         placements.push({ x, y, w: it.w, h: it.h, panelId: it.panelId, rotated: it.rotated });

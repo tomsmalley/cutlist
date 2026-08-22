@@ -19,6 +19,7 @@ const resultsEl = el<HTMLElement>('results');
 const nameInput = el<HTMLInputElement>('project-name');
 const kerfInput = el<HTMLInputElement>('opt-kerf');
 const crossCapInput = el<HTMLInputElement>('opt-crosscap');
+const ripOversizedInput = el<HTMLInputElement>('opt-ripoversized');
 const saveIndicator = el<HTMLSpanElement>('save-indicator');
 
 let project: Project = storage.loadCurrent() ?? defaultProject('untitled project');
@@ -288,6 +289,10 @@ crossCapInput.addEventListener('input', () => {
   project.options.crossCutCap = v > 0 ? v : 0;
   changed();
 });
+ripOversizedInput.addEventListener('change', () => {
+  project.options.ripOversized = ripOversizedInput.checked;
+  changed();
+});
 
 // ---------------------------------------------------------------------------
 // Project management: name + save/load as JSON
@@ -297,6 +302,7 @@ function loadIntoUi(): void {
   nameInput.value = project.name;
   kerfInput.value = String(project.options.kerf);
   crossCapInput.value = String(project.options.crossCutCap);
+  ripOversizedInput.checked = project.options.ripOversized;
   renderTables();
 }
 

@@ -28,6 +28,7 @@ export function normalizeProject(raw: Project): Project {
   delete p.options.labels;
   if (typeof p.options.kerf !== 'number') p.options.kerf = 3;
   if (p.options.crossCutCap === undefined) p.options.crossCutCap = 700;
+  if (typeof p.options.ripOversized !== 'boolean') p.options.ripOversized = false;
   return p;
 }
 

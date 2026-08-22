@@ -31,7 +31,18 @@ export interface Options {
    * (a cross cut along its long axis after rotating it) if its width fits.
    */
   crossCutCap: number;
+  /**
+   * Rip strips RIP_OVERSIZE mm taller than needed, then trim every piece back
+   * to final size at the cross-cut station — extra cross cuts in exchange for
+   * not having to place the long, unwieldy rips dead-on. Strips whose pieces
+   * cannot be trimmed (piece longer than the cross-cut capacity) are still
+   * ripped at exact size.
+   */
+  ripOversized: boolean;
 }
+
+/** Allowance added to rips when Options.ripOversized is on (mm). */
+export const RIP_OVERSIZE = 5;
 
 export interface Project {
   name: string;
@@ -49,6 +60,6 @@ export function defaultProject(name: string): Project {
     name,
     panels: [],
     stock: [{ id: newId(), length: 2440, width: 1220, qty: 10, enabled: true }],
-    options: { kerf: 3, crossCutCap: 700 },
+    options: { kerf: 3, crossCutCap: 700, ripOversized: false },
   };
 }
