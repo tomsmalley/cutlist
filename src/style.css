@@ -156,11 +156,13 @@ body {
   min-height: 0;
 }
 
+/* Equal 20px margins: outer edges get the full 20px, and each column
+   contributes 10px to the shared gutter so the gap also measures 20px. */
 .sidebar {
   width: var(--sidebar-width);
   flex: 0 0 auto;
   overflow-y: auto;
-  padding: 16px;
+  padding: 20px 10px 20px 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -169,7 +171,7 @@ body {
 .results {
   flex: 1;
   overflow-y: auto;
-  padding: 20px 28px 56px;
+  padding: 20px 20px 56px 10px;
 }
 
 .results.calculating {
@@ -812,8 +814,14 @@ tr.row-disabled .align {
   .layout {
     flex-direction: column;
   }
+  /* Stacked columns: the shared gutter runs horizontally instead, so the
+     10/10 split moves to the sidebar's bottom and the results' top. */
   .sidebar {
     width: 100%;
     max-height: 55vh;
+    padding: 20px 20px 10px;
+  }
+  .results {
+    padding: 10px 20px 56px;
   }
 }
