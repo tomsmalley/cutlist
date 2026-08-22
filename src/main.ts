@@ -293,7 +293,7 @@ crossCapInput.addEventListener('input', () => {
 // Project management: name + save/load as JSON
 
 function loadIntoUi(): void {
-  document.title = `${project.name} — cut`;
+  document.title = `${project.name} — cutlist`;
   nameInput.value = project.name;
   kerfInput.value = String(project.options.kerf);
   crossCapInput.value = String(project.options.crossCutCap);
@@ -304,7 +304,7 @@ nameInput.addEventListener('change', () => {
   const next = nameInput.value.trim() || 'untitled project';
   nameInput.value = next;
   project.name = next;
-  document.title = `${next} — cut`;
+  document.title = `${next} — cutlist`;
   storage.saveCurrent(project);
   saveIndicator.textContent = 'saved';
 });

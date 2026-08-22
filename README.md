@@ -1,4 +1,4 @@
-# cut
+# cutlist
 
 A fully client-side cut list optimiser for sheet goods. Enter your panels and
 stock sheets, set the kerf and per-panel alignment (any / parallel /
