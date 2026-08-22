@@ -11,7 +11,7 @@
   --accent: #d97706;
   --accent-hover: #b45309;
   --danger: #b3403a;
-  --sidebar-width: 460px;
+  --sidebar-width: 520px;
 }
 
 html,
@@ -197,19 +197,6 @@ body {
   color: var(--muted);
 }
 
-/* Native number spinners clip the values in narrow cells; hide them
-   everywhere (typing and arrow keys still work). */
-input[type='number']::-webkit-outer-spin-button,
-input[type='number']::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-input[type='number'] {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-
 /* ----------------------------------------------------------------- tables */
 
 table.grid {
@@ -242,6 +229,7 @@ table.grid tr:hover td {
 table.grid input[type='number'],
 table.grid input[type='text'] {
   width: 100%;
+  min-width: 68px;
   border: 1px solid transparent;
   border-radius: 6px;
   padding: 6px 6px;
@@ -299,7 +287,7 @@ tr.drop-after td {
 }
 
 .qty-col {
-  width: 60px;
+  width: 80px;
 }
 
 .actions-col {
