@@ -700,14 +700,8 @@ tr.row-disabled .align {
 /* ----------------------------------------------------------------- print */
 
 @media print {
-  /* A real page margin on every page — printers can't reach the paper edge —
-     kept small enough that browsers still tend to drop their header/footer
-     furniture (disable "headers and footers" in the print dialog if yours
-     doesn't). */
-  @page {
-    margin: 15mm;
-  }
-
+  /* Page margins are left to the browser default — they're configurable in
+     the print dialog, along with the header/footer furniture toggle. */
   html,
   body {
     height: auto;
