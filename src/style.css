@@ -765,31 +765,10 @@ tr.row-disabled .align {
     display: block;
   }
 
-  /* The app chrome goes; the top bar becomes a plain document header. */
+  /* No app chrome at all — the sheets and cut lists are the document. */
   .sidebar,
-  .topbar-actions,
-  .save-indicator {
-    display: none !important;
-  }
-
   .topbar {
-    background: none;
-    border-bottom: 2px solid #21201c;
-    padding: 0 0 8px;
-  }
-
-  .brand {
-    display: none;
-  }
-
-  #project-name {
-    border: none;
-    background: none;
-    font-size: 16px;
-    font-weight: 700;
-    padding: 0;
-    max-width: none;
-    flex: 1;
+    display: none !important;
   }
 
   /* Let the document flow across pages instead of scrolling. */
