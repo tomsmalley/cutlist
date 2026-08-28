@@ -22,6 +22,7 @@ export function renderResults(
   result: OptimizeResult,
   panels: PanelSpec[],
   kerf: number,
+  ripOversized: boolean,
   layoutsTried?: number
 ): void {
   const { sheets, unplaced, placedCount, totalPanelArea, totalSheetArea } = result;
@@ -261,7 +262,15 @@ export function renderResults(
         const ripY = strip.y + strip.h;
         const offset = prevCutEdge === null ? ripY : ripY - prevCutEdge;
         const ref = prevCutEdge === null ? 'the top edge' : 'the last cut edge';
-        cutlist += `<li data-cut="r${i}-${si}"><b>Rip</b> full length at <b>${fmt(offset)}</b> from ${ref}.${inner}</li>`;
+        // With oversizing on, flag each rip: oversized strips get trimmed back
+        // at the cross-cut station, so a precise strip's rip is the only cut
+        // that sets its final size.
+        const flag = !ripOversized
+          ? ''
+          : strip.oversized
+            ? ' <span class="rip-oversized">(oversized)</span>'
+            : ' <span class="rip-precise">(precise)</span>';
+        cutlist += `<li data-cut="r${i}-${si}"><b>Rip</b>${flag} full length at <b>${fmt(offset)}</b> from ${ref}.${inner}</li>`;
         prevCutEdge = ripY + kerf;
       } else {
         cutlist += `<li data-cut="">Remaining piece (${fmt(strip.h)} tall):${inner}</li>`;

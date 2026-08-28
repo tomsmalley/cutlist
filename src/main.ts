@@ -399,7 +399,14 @@ worker.onmessage = (e: MessageEvent<CalcResponse>) => {
     calcBtn.classList.remove('busy');
   }
   const result: OptimizeResult = { ...msg.result, unplaced: new Map(msg.result.unplaced) };
-  renderResults(resultsEl, result, project.panels, project.options.kerf, msg.tried);
+  renderResults(
+    resultsEl,
+    result,
+    project.panels,
+    project.options.kerf,
+    project.options.ripOversized,
+    msg.tried
+  );
 };
 
 worker.onerror = (e) => {

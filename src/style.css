@@ -683,6 +683,17 @@ tr.row-disabled .align {
   font-weight: 600;
 }
 
+/* Rip markers when oversizing is on: precise rips set a final size with no
+   trim to follow, so they get the attention colour. */
+.rip-precise {
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.rip-oversized {
+  color: var(--muted);
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;

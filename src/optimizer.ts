@@ -13,6 +13,11 @@ export interface Placement {
 export interface StripResult {
   y: number;
   h: number;
+  /**
+   * Ripped RIP_OVERSIZE over the finished height (pieces trimmed back at the
+   * cross-cut station); false means the rip itself must hit the final size.
+   */
+  oversized: boolean;
 }
 
 export interface SheetResult {
@@ -372,10 +377,12 @@ function stripH(st: Item[]): number {
  * cross-cuttable. Matches how the greedy packer sets Strip.oversized, so the
  * flag never needs carrying through improvement moves.
  */
+function stripOversized(st: Item[], os: number, cap: number): boolean {
+  return os > 0 && stripH(st) + os <= cap && st.every((it) => it.w <= cap);
+}
+
 function stripPhysH(st: Item[], os: number, cap: number): number {
-  const h = stripH(st);
-  const over = os > 0 && h + os <= cap && st.every((it) => it.w <= cap);
-  return h + (over ? os : 0);
+  return stripH(st) + (stripOversized(st, os, cap) ? os : 0);
 }
 
 function stripLen(st: Item[], kerf: number): number {
@@ -751,7 +758,7 @@ export function optimize(
         placements.push({ x, y, w: it.w, h: it.h, panelId: it.panelId, rotated: it.rotated });
         x += it.w + kerf;
       }
-      strips.push({ y, h });
+      strips.push({ y, h, oversized: stripOversized(st, os, cap) });
       y += h + kerf;
     }
     return {
