@@ -113,10 +113,19 @@ export function shuffleStrategy(seed: number): Strategy {
  * long axis, so its width must fit the cross-cut capacity).
  *
  * Lexicographic layout quality, lower is better:
- *   unplaced panel area → sheets consumed (total stock area) → rip count →
- *   cross-cut count → mixed-panel strips → prefer smaller sheets on ties →
- *   committed strip area (biggest reusable offcut).
+ *   unplaced panel area → sheets consumed (total stock area) → weighted cuts
+ *   (rips cost RIP_WEIGHT cross cuts each) → mixed-panel strips → prefer
+ *   smaller sheets on ties → committed strip area (biggest reusable offcut).
  */
+/**
+ * A full-length rip costs about this many cross cuts of effort. Finite on
+ * purpose: ranking rips lexicographically above cross cuts made the packer
+ * pad a strip with taller panels so the strip heights summed exactly to the
+ * sheet width (saving the last rip) at the price of a trim cut per shorter
+ * piece in that strip — more cuts and shredded offcuts to save one rip.
+ */
+const RIP_WEIGHT = 3;
+
 export function scoreResult(r: OptimizeResult): number[] {
   let rips = 0;
   let crosses = 0;
@@ -139,7 +148,7 @@ export function scoreResult(r: OptimizeResult): number[] {
       if (kinds.size > 1) mix += kinds.size - 1;
     }
   }
-  return [r.unplacedArea, r.totalSheetArea, rips, crosses, mix, sumSq, r.stripArea];
+  return [r.unplacedArea, r.totalSheetArea, RIP_WEIGHT * rips + crosses, mix, sumSq, r.stripArea];
 }
 
 export function compareScores(a: number[], b: number[]): number {
@@ -443,7 +452,7 @@ function improveObjective(layout: ISheet[], kerf: number, cap: number, os: numbe
       if (kinds.size > 1) mix += kinds.size - 1;
     }
   }
-  return [totalArea, rips, crosses, mix, sumSq, stripArea];
+  return [totalArea, RIP_WEIGHT * rips + crosses, mix, sumSq, stripArea];
 }
 
 /** Group same-panel items adjacent, ordered by first appearance. */
