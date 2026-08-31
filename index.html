@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>cutlist</title>
   </head>
-  <body>
+  <body data-view="inputs">
     <header class="topbar">
       <div class="brand"><span class="brand-mark" aria-hidden="true"></span>cutlist</div>
       <div class="project-controls">
@@ -20,6 +20,11 @@
         <button id="calculate" class="btn primary">Calculate</button>
       </div>
     </header>
+
+    <nav class="view-tabs">
+      <button class="view-tab active" data-view="inputs">Inputs</button>
+      <button class="view-tab" data-view="results">Results</button>
+    </nav>
 
     <main class="layout">
       <aside class="sidebar">

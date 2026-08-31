@@ -11,7 +11,8 @@
   --accent: #d97706;
   --accent-hover: #b45309;
   --danger: #b3403a;
-  --sidebar-width: 520px;
+  /* Tracks the viewport: ~520px on a laptop, wider on big displays. */
+  --sidebar-width: clamp(480px, 36vw, 800px);
 }
 
 html,
@@ -148,6 +149,46 @@ body {
   pointer-events: none;
 }
 
+/* ------------------------------------------------------------- view tabs */
+
+/* Inputs/Results switcher, shown only on narrow screens. */
+.view-tabs {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  padding: 8px 12px;
+}
+
+.view-tab {
+  flex: 1;
+  padding: 8px 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-tab:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.view-tab:last-child {
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+}
+
+.view-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 /* ----------------------------------------------------------------- layout */
 
 .layout {
@@ -266,6 +307,12 @@ table.grid input:focus {
   padding: 4px 2px;
   color: #c9c5bb;
   cursor: grab;
+  /* Touch dragging: the browser must not claim the gesture for scrolling,
+     text selection, or the long-press callout. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .drag-handle:hover {
@@ -280,12 +327,14 @@ tr.dragging {
   opacity: 0.4;
 }
 
+/* Inset shadows, not borders: the marker must not change row heights, or
+   the rows shift under the pointer while the drag is measuring them. */
 tr.drop-before td {
-  border-top: 2px solid var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 tr.drop-after td {
-  border-bottom: 2px solid var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .qty-col {
@@ -781,8 +830,14 @@ tr.row-disabled .align {
 
   /* No app chrome at all — the sheets and cut lists are the document. */
   .sidebar,
-  .topbar {
+  .topbar,
+  .view-tabs {
     display: none !important;
+  }
+
+  /* Print always shows the results, whatever tab a phone was on. */
+  .results {
+    display: block !important;
   }
 
   /* Let the document flow across pages instead of scrolling. */
@@ -826,18 +881,131 @@ tr.row-disabled .align {
 
 /* --------------------------------------------------------------- narrow */
 
+/* Small screens abandon the two-pane app shell: the page scrolls natively
+   as one document (no nested scroll areas), and a sticky Inputs/Results
+   tab bar switches between the two panes. */
 @media (max-width: 900px) {
+  html,
+  body {
+    height: auto;
+  }
+
   .layout {
-    flex-direction: column;
+    display: block;
   }
-  /* Stacked columns: the shared gutter runs horizontally instead, so the
-     10/10 split moves to the sidebar's bottom and the results' top. */
-  .sidebar {
-    width: 100%;
-    max-height: 55vh;
-    padding: 20px 20px 10px;
+
+  .view-tabs {
+    display: flex;
   }
+
+  body[data-view='inputs'] .results {
+    display: none;
+  }
+
+  body[data-view='results'] .sidebar {
+    display: none;
+  }
+
+  .sidebar,
   .results {
-    padding: 10px 20px 56px;
+    width: 100%;
+    overflow: visible;
+    padding: 12px 12px 72px;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 10px 12px;
+  }
+
+  .topbar-actions {
+    margin-left: auto;
+  }
+
+  /* The project name drops to its own row when space runs out. */
+  .project-controls {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  /* Compact rows so all columns fit a phone. The drag column slims down
+     but stays: dragging is pointer-based, so it works on touch. */
+  table.grid .drag-col {
+    width: 20px;
+  }
+
+  .drag-handle {
+    padding: 10px 4px;
+  }
+
+  table.grid th,
+  table.grid td {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  table.grid td:first-child {
+    padding-left: 8px;
+  }
+
+  table.grid input[type='number'],
+  table.grid input[type='text'] {
+    min-width: 0;
+    padding: 8px 4px;
+  }
+
+  /* Guarantee the numbers stay legible; the name column takes the squeeze
+     (it scrolls into view when focused). The stock table has fewer columns
+     and longer values, so its inputs get more room. */
+  #panels-section input[data-field='length'],
+  #panels-section input[data-field='width'] {
+    width: 52px;
+  }
+
+  #stock-section input[data-field='length'],
+  #stock-section input[data-field='width'] {
+    width: 72px;
+  }
+
+  table.grid input[data-field='qty'] {
+    width: 40px;
+  }
+
+  .icon-btn {
+    padding: 6px 2px;
+  }
+
+  /* 16px inputs stop iOS Safari auto-zooming on focus. */
+  table.grid input,
+  .option-value input[type='number'] {
+    font-size: 16px;
+  }
+
+  .name-col {
+    min-width: 64px;
+  }
+
+  .qty-col {
+    width: 52px;
+  }
+
+  .actions-col {
+    width: auto;
+    padding-right: 6px;
+  }
+
+  .stat {
+    min-width: 0;
+    flex: 1 1 30%;
+    padding: 8px 12px;
+  }
+
+  .stat-value {
+    font-size: 18px;
+  }
+
+  .sheet-card {
+    padding: 10px 10px 12px;
   }
 }

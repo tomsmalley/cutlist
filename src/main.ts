@@ -98,7 +98,7 @@ function rowHtml(
   const swapBtn = `<button class="icon-btn swap" data-action="swap" title="Swap length and width">${SWAP_ICON}</button>`;
   return `
     <tr data-id="${item.id}" data-kind="${kind}" class="${item.enabled ? '' : 'row-disabled'}">
-      <td class="drag-col"><span class="drag-handle" draggable="true" title="Drag to reorder">${GRIP_ICON}</span></td>
+      <td class="drag-col"><span class="drag-handle" title="Drag to reorder">${GRIP_ICON}</span></td>
       ${nameCell}
       <td><input type="number" min="0" step="any" data-field="length" value="${item.length || ''}"></td>
       <td><input type="number" min="0" step="any" data-field="width" value="${item.width || ''}"></td>
@@ -185,8 +185,18 @@ function handleTableClick(e: Event): void {
 }
 
 // --- drag to reorder rows ---
+// Pointer events rather than HTML5 drag and drop, so touch dragging works.
+// The handle captures the pointer; the row under the finger is found with
+// elementFromPoint, and dragging near the viewport edges scrolls the list.
+
+const DRAG_EDGE = 60;
+const DRAG_SCROLL_STEP = 9;
 
 let dragging: { kind: string; id: string } | null = null;
+let dropAt: { row: HTMLTableRowElement; before: boolean } | null = null;
+let dragPoint = { x: 0, y: 0 };
+let dragScroller: Element | null = null;
+let dragScrollRaf = 0;
 
 function clearDropMarkers(): void {
   document
@@ -194,72 +204,100 @@ function clearDropMarkers(): void {
     .forEach((r) => r.classList.remove('drop-before', 'drop-after', 'dragging'));
 }
 
-function handleDragStart(e: DragEvent): void {
-  const handle = (e.target as HTMLElement).closest('.drag-handle');
-  if (!handle) return;
-  const row = handle.closest('tr');
-  if (!row) return;
-  dragging = { kind: row.dataset.kind!, id: row.dataset.id! };
-  row.classList.add('dragging');
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', row.dataset.id!);
-    e.dataTransfer.setDragImage(row, 16, row.clientHeight / 2);
-  }
-}
-
-function dropTarget(e: DragEvent): { row: HTMLTableRowElement; before: boolean } | null {
-  if (!dragging) return null;
-  const row = (e.target as HTMLElement).closest<HTMLTableRowElement>('tr[data-id]');
-  if (!row || row.dataset.kind !== dragging.kind) return null;
-  const rect = row.getBoundingClientRect();
-  return { row, before: e.clientY < rect.top + rect.height / 2 };
-}
-
-function handleDragOver(e: DragEvent): void {
-  const target = dropTarget(e);
-  if (!target) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+function updateDropTarget(): void {
   document
     .querySelectorAll('tr.drop-before, tr.drop-after')
     .forEach((r) => r.classList.remove('drop-before', 'drop-after'));
-  target.row.classList.add(target.before ? 'drop-before' : 'drop-after');
+  dropAt = null;
+  if (!dragging) return;
+  const el = document.elementFromPoint(dragPoint.x, dragPoint.y);
+  const row = el?.closest<HTMLTableRowElement>('tr[data-id]');
+  if (!row || row.dataset.kind !== dragging.kind) return;
+  const rect = row.getBoundingClientRect();
+  const before = dragPoint.y < rect.top + rect.height / 2;
+  dropAt = { row, before };
+  row.classList.add(before ? 'drop-before' : 'drop-after');
 }
 
-function handleDrop(e: DragEvent): void {
-  const target = dropTarget(e);
-  if (!target || !dragging) return;
+function dragScrollTick(): void {
+  dragScrollRaf = 0;
+  if (!dragging || !dragScroller) return;
+  const dir = dragPoint.y < DRAG_EDGE ? -1 : dragPoint.y > window.innerHeight - DRAG_EDGE ? 1 : 0;
+  if (dir === 0) return;
+  const top = dragScroller.scrollTop;
+  dragScroller.scrollTop = top + dir * DRAG_SCROLL_STEP;
+  if (dragScroller.scrollTop !== top) updateDropTarget();
+  dragScrollRaf = requestAnimationFrame(dragScrollTick);
+}
+
+function handlePointerDown(e: PointerEvent): void {
+  if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  const handle = (e.target as HTMLElement).closest<HTMLElement>('.drag-handle');
+  if (!handle) return;
+  const row = handle.closest('tr');
+  if (!row?.dataset.id) return;
   e.preventDefault();
-  const list: { id: string }[] = dragging.kind === 'panel' ? project.panels : project.stock;
-  const from = list.findIndex((x) => x.id === dragging!.id);
-  let to = list.findIndex((x) => x.id === target.row.dataset.id);
-  if (from >= 0 && to >= 0) {
-    if (!target.before) to++;
-    if (from < to) to--;
-    if (to !== from) {
-      const [item] = list.splice(from, 1);
-      list.splice(to, 0, item);
-      renderTables();
-      changed();
+  dragging = { kind: row.dataset.kind!, id: row.dataset.id };
+  dragPoint = { x: e.clientX, y: e.clientY };
+  row.classList.add('dragging');
+  // The pane that scrolls: the sidebar on desktop, the page when stacked.
+  const sidebar = document.querySelector('.sidebar');
+  dragScroller =
+    sidebar && sidebar.scrollHeight > sidebar.clientHeight ? sidebar : document.scrollingElement;
+  try {
+    handle.setPointerCapture(e.pointerId);
+  } catch {
+    // Touch pointers are implicitly captured by the pointerdown target
+    // anyway; capture is only a nicety for fast mouse drags.
+  }
+}
+
+function handlePointerMove(e: PointerEvent): void {
+  if (!dragging || !e.isPrimary) return;
+  dragPoint = { x: e.clientX, y: e.clientY };
+  updateDropTarget();
+  if (!dragScrollRaf) dragScrollTick();
+}
+
+function handlePointerUp(e: PointerEvent): void {
+  if (!dragging || !e.isPrimary) return;
+  if (dropAt) {
+    const list: { id: string }[] = dragging.kind === 'panel' ? project.panels : project.stock;
+    const from = list.findIndex((x) => x.id === dragging!.id);
+    let to = list.findIndex((x) => x.id === dropAt!.row.dataset.id);
+    if (from >= 0 && to >= 0) {
+      if (!dropAt.before) to++;
+      if (from < to) to--;
+      if (to !== from) {
+        const [item] = list.splice(from, 1);
+        list.splice(to, 0, item);
+        renderTables();
+        changed();
+      }
     }
   }
-  dragging = null;
-  clearDropMarkers();
+  endDrag();
 }
 
-function handleDragEnd(): void {
+function endDrag(): void {
   dragging = null;
+  dropAt = null;
+  if (dragScrollRaf) cancelAnimationFrame(dragScrollRaf);
+  dragScrollRaf = 0;
   clearDropMarkers();
 }
 
 for (const tbody of [panelsTbody, stockTbody]) {
   tbody.addEventListener('input', handleTableInput);
   tbody.addEventListener('click', handleTableClick);
-  tbody.addEventListener('dragstart', handleDragStart);
-  tbody.addEventListener('dragover', handleDragOver);
-  tbody.addEventListener('drop', handleDrop);
-  tbody.addEventListener('dragend', handleDragEnd);
+  tbody.addEventListener('pointerdown', handlePointerDown);
+  tbody.addEventListener('pointermove', handlePointerMove);
+  tbody.addEventListener('pointerup', handlePointerUp);
+  tbody.addEventListener('pointercancel', endDrag);
+  // Long-pressing a handle must start a drag, not a context menu.
+  tbody.addEventListener('contextmenu', (e) => {
+    if ((e.target as HTMLElement).closest('.drag-handle')) e.preventDefault();
+  });
 }
 
 el<HTMLButtonElement>('add-panel').addEventListener('click', () => {
@@ -375,10 +413,31 @@ function calculate(): void {
   worker.postMessage(msg);
 }
 
-function finishRun(): void {
-  window.clearTimeout(slowTimer);
+// The button keeps its idle width while busy — a growing label would
+// reflow the topbar (and, on phones, shove the page around mid-gesture) —
+// so progress shows as a percentage over a background fill.
+function resetCalcButton(): void {
   calcBtn.innerHTML = calcBtnHtml;
   calcBtn.classList.remove('busy');
+  calcBtn.style.background = '';
+  calcBtn.style.minWidth = '';
+  calcBtn.style.maxWidth = '';
+}
+
+function showCalcProgress(pct: number): void {
+  if (!calcBtn.classList.contains('busy')) {
+    const w = `${calcBtn.offsetWidth}px`;
+    calcBtn.style.minWidth = w;
+    calcBtn.style.maxWidth = w;
+    calcBtn.classList.add('busy');
+  }
+  calcBtn.textContent = `${pct}%`;
+  calcBtn.style.background = `linear-gradient(90deg, var(--accent-hover) ${pct}%, var(--accent) ${pct}%)`;
+}
+
+function finishRun(): void {
+  window.clearTimeout(slowTimer);
+  resetCalcButton();
   resultsEl.classList.remove('calculating');
 }
 
@@ -386,8 +445,7 @@ worker.onmessage = (e: MessageEvent<CalcResponse>) => {
   const msg = e.data;
   if (msg.runId !== runSeq) return; // stale run superseded by newer input
   if (msg.type === 'progress') {
-    calcBtn.classList.add('busy');
-    calcBtn.textContent = `Calculating… ${Math.round((100 * msg.done) / msg.total)}%`;
+    showCalcProgress(Math.round((100 * msg.done) / msg.total));
     return;
   }
   // Interim results render right away; the button stays busy until the
@@ -395,8 +453,7 @@ worker.onmessage = (e: MessageEvent<CalcResponse>) => {
   window.clearTimeout(slowTimer);
   resultsEl.classList.remove('calculating');
   if (msg.final) {
-    calcBtn.innerHTML = calcBtnHtml;
-    calcBtn.classList.remove('busy');
+    resetCalcButton();
   }
   const result: OptimizeResult = { ...msg.result, unplaced: new Map(msg.result.unplaced) };
   renderResults(
@@ -414,7 +471,24 @@ worker.onerror = (e) => {
   resultsEl.innerHTML = `<div class="warning-bar">&#9888; Calculation failed: ${e.message ?? 'unknown error'}</div>`;
 };
 
-calcBtn.addEventListener('click', calculate);
+// ---------------------------------------------------------------------------
+// Narrow screens: an Inputs/Results tab bar replaces the side-by-side panes.
+
+const narrowView = window.matchMedia('(max-width: 900px)');
+const viewTabs = [...document.querySelectorAll<HTMLButtonElement>('.view-tab')];
+
+function setView(view: string): void {
+  document.body.dataset.view = view;
+  for (const b of viewTabs) b.classList.toggle('active', b.dataset.view === view);
+  window.scrollTo({ top: 0 });
+}
+
+for (const b of viewTabs) b.addEventListener('click', () => setView(b.dataset.view!));
+
+calcBtn.addEventListener('click', () => {
+  calculate();
+  if (narrowView.matches) setView('results');
+});
 
 // ---------------------------------------------------------------------------
 // Hover linking between cut-list entries and cut lines in the diagram.
