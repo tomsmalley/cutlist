@@ -553,6 +553,209 @@ function applySwapVariants(
   return variants;
 }
 
+// ---------------------------------------------------------------------------
+// Class repack: relocations and swaps move one piece at a time, so they can
+// never restructure whole strips — e.g. turning {5 fronts} + {6 sides} plus a
+// stray front trimmed elsewhere into two mixed 3+3 strips takes several
+// coordinated moves whose intermediates all score worse, and hill climbing
+// refuses the first step. Instead, dissolve every strip of one height class
+// (plus same-height pieces trimmed inside taller strips) and re-solve their
+// 1-D packing exactly, keeping the result only when the global objective
+// improves.
+
+const REPACK_MAX_GROUPS = 6;
+const REPACK_MAX_ITEMS = 40;
+const REPACK_NODE_BUDGET = 20000;
+
+/**
+ * Exact 1-D bin packing of grouped pieces: fewest bins first, then least
+ * mixing (Σ per-bin distinct panels − 1), matching the objective's ranking.
+ * A fill is a per-group count vector; bins are generated in non-increasing
+ * lexicographic fill order to break symmetry, and a panel may not appear in
+ * one bin under two groups (the strip rotation lock). Best-so-far within the
+ * node budget; null when nothing packs.
+ */
+function packClass(
+  widths: number[],
+  panels: string[],
+  total: number[],
+  cap: number,
+  kerf: number
+): number[][] | null {
+  const n = widths.length;
+  let nodes = 0;
+  let best: number[][] | null = null;
+  let bestBins = Infinity;
+  let bestMix = Infinity;
+
+  const remLen = (rem: number[]) => rem.reduce((s, c, i) => s + c * widths[i], 0);
+
+  // Fill vectors for one bin, largest counts first, each lexicographically
+  // ≤ limit (the previous bin's fill).
+  function fillsFor(rem: number[], limit: number[] | null): number[][] {
+    const out: number[][] = [];
+    const cur = new Array<number>(n).fill(0);
+    const rec = (i: number, len: number, count: number, bounded: boolean): void => {
+      if (nodes > REPACK_NODE_BUDGET) return;
+      if (i === n) {
+        if (count > 0) out.push(cur.slice());
+        return;
+      }
+      let max = bounded && limit ? limit[i] : rem[i];
+      for (let c = Math.min(max, rem[i]); c >= 0; c--) {
+        if (c > 0) {
+          const dup = panels.some((p, j) => j < i && cur[j] > 0 && p === panels[i]);
+          if (dup) continue;
+          const nlen = len + c * widths[i] + (count > 0 ? kerf : 0) + (c - 1) * kerf;
+          if (nlen > cap) continue;
+          cur[i] = c;
+          nodes++;
+          rec(i + 1, nlen, count + c, bounded && limit !== null && c === limit[i]);
+          cur[i] = 0;
+        } else {
+          nodes++;
+          rec(i + 1, len, count, bounded && (limit === null || limit[i] === 0));
+        }
+      }
+    };
+    rec(0, 0, 0, limit !== null);
+    return out;
+  }
+
+  const dfs = (rem: number[], limit: number[] | null, bins: number[][], mix: number): void => {
+    if (nodes > REPACK_NODE_BUDGET) return;
+    const rl = remLen(rem);
+    if (rl === 0) {
+      if (bins.length < bestBins || (bins.length === bestBins && mix < bestMix)) {
+        best = bins.map((b) => b.slice());
+        bestBins = bins.length;
+        bestMix = mix;
+      }
+      return;
+    }
+    const lb = bins.length + Math.ceil(rl / cap);
+    if (lb > bestBins || (lb === bestBins && mix >= bestMix)) return;
+    for (const f of fillsFor(rem, limit)) {
+      const nrem = rem.map((c, i) => c - f[i]);
+      const kinds = new Set(panels.filter((_, i) => f[i] > 0)).size;
+      dfs(nrem, f, [...bins, f], mix + kinds - 1);
+    }
+  };
+  dfs(total, null, [], 0);
+  return best;
+}
+
+function cloneAll(layout: ISheet[]): ISheet[] {
+  return layout.map((sh) => ({ spec: sh.spec, strips: sh.strips.map((st) => st.slice()) }));
+}
+
+function tryRepackClass(
+  layout: ISheet[],
+  v: number,
+  includeStrays: boolean,
+  kerf: number,
+  cap: number,
+  os: number
+): ISheet[] | null {
+  const slots: { sheet: number; strip: number }[] = [];
+  const strays: { sheet: number; strip: number; item: number }[] = [];
+  for (let a = 0; a < layout.length; a++) {
+    for (let i = 0; i < layout[a].strips.length; i++) {
+      const st = layout[a].strips[i];
+      if (stripH(st) === v) {
+        slots.push({ sheet: a, strip: i });
+      } else if (includeStrays) {
+        for (let k = 0; k < st.length; k++) {
+          if (st[k].h === v && st[k].h < stripH(st)) strays.push({ sheet: a, strip: i, item: k });
+        }
+      }
+    }
+  }
+  if (slots.length === 0 || (slots.length < 2 && strays.length === 0)) return null;
+
+  const pool: Item[] = [];
+  for (const s of slots) pool.push(...layout[s.sheet].strips[s.strip]);
+  for (const s of strays) pool.push(layout[s.sheet].strips[s.strip][s.item]);
+  if (pool.length > REPACK_MAX_ITEMS) return null;
+
+  // Same panel + rotation ⇒ identical dimensions, so groups need no size key.
+  const groups = new Map<string, Item[]>();
+  for (const it of pool) {
+    const key = `${it.panelId}|${it.rotated ? 1 : 0}`;
+    const g = groups.get(key);
+    if (g) g.push(it);
+    else groups.set(key, [it]);
+  }
+  if (groups.size > REPACK_MAX_GROUPS) return null;
+  const members = [...groups.values()];
+  const widths = members.map((g) => g[0].w);
+  const panels = members.map((g) => g[0].panelId);
+  const counts = members.map((g) => g.length);
+
+  const slotLens = slots
+    .map((s) => layout[s.sheet].spec.length)
+    .sort((a, b) => b - a);
+  const bins = packClass(widths, panels, counts, slotLens[0], kerf);
+  if (!bins || bins.length > slots.length) return null;
+
+  // Longest bins claim the longest-sheet slots; the rest of the slots close.
+  const binLen = (b: number[]) =>
+    b.reduce((s, c, i) => s + c * widths[i], 0) + kerf * (b.reduce((s, c) => s + c, 0) - 1);
+  bins.sort((a, b) => binLen(b) - binLen(a));
+  const orderedSlots = [...slots].sort(
+    (a, b) => layout[b.sheet].spec.length - layout[a.sheet].spec.length
+  );
+  for (let i = 0; i < bins.length; i++) {
+    if (binLen(bins[i]) > layout[orderedSlots[i].sheet].spec.length) return null;
+  }
+
+  const clone = cloneAll(layout);
+  const byStrip = new Map<string, number[]>();
+  for (const s of strays) {
+    const key = `${s.sheet}:${s.strip}`;
+    const arr = byStrip.get(key);
+    if (arr) arr.push(s.item);
+    else byStrip.set(key, [s.item]);
+  }
+  for (const [key, items] of byStrip) {
+    const [a, i] = key.split(':').map(Number);
+    for (const k of items.sort((x, y) => y - x)) clone[a].strips[i].splice(k, 1);
+  }
+  const pools = members.map((g) => g.slice());
+  for (let i = 0; i < orderedSlots.length; i++) {
+    const target: Item[] = [];
+    if (i < bins.length) {
+      for (let gi = 0; gi < members.length; gi++) {
+        for (let c = 0; c < bins[i][gi]; c++) target.push(pools[gi].pop()!);
+      }
+    }
+    clone[orderedSlots[i].sheet].strips[orderedSlots[i].strip] = target;
+  }
+  const touched = new Set<number>(orderedSlots.map((s) => s.sheet));
+  for (const s of strays) touched.add(s.sheet);
+  return pruneAndCheck(clone, [...touched], kerf, cap, os);
+}
+
+function findClassRepack(
+  layout: ISheet[],
+  obj: number[],
+  kerf: number,
+  cap: number,
+  os: number
+): { layout: ISheet[]; obj: number[] } | null {
+  const heights = new Set<number>();
+  for (const sh of layout) for (const st of sh.strips) heights.add(stripH(st));
+  for (const v of [...heights].sort((a, b) => b - a)) {
+    for (const includeStrays of [true, false]) {
+      const cand = tryRepackClass(layout, v, includeStrays, kerf, cap, os);
+      if (!cand) continue;
+      const candObj = improveObjective(cand, kerf, cap, os);
+      if (compareScores(candObj, obj) < 0) return { layout: cand, obj: candObj };
+    }
+  }
+  return null;
+}
+
 function findImprovingMove(
   layout: ISheet[],
   obj: number[],
@@ -615,7 +818,9 @@ function improve(
   let current = layout;
   let obj = improveObjective(current, kerf, cap, os);
   for (let round = 0; round < MAX_IMPROVE_ROUNDS; round++) {
-    const next = findImprovingMove(current, obj, byId, kerf, cap, os, allowSwaps);
+    const next =
+      findClassRepack(current, obj, kerf, cap, os) ??
+      findImprovingMove(current, obj, byId, kerf, cap, os, allowSwaps);
     if (!next) break;
     current = next.layout;
     obj = next.obj;
