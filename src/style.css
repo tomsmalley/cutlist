@@ -228,6 +228,11 @@ body {
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
+  /* The sidebar is a flex column. overflow: hidden zeroes a flex item's
+     automatic minimum height, so without this a long panel list lets the
+     card shrink to fit and clip its own add button instead of making the
+     sidebar scroll. */
+  flex-shrink: 0;
 }
 
 .card-title {
