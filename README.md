@@ -24,9 +24,10 @@ The layout algorithm matches a **small-workshop tracksaw workflow**:
 Each calculation runs a **time-budgeted search** in a Web Worker, so the UI
 never blocks: all 96 combinations of the packer's heuristic knobs (placement
 orders, strip-fit rules, orientation preferences, stock policies, like-panel
-affinities) always run, then seeded random restarts keep coming for up to
-~10 seconds, stopping early once hundreds of candidates in a row fail to
-improve. The best layout so far is rendered as soon as the first candidate
+affinities) always run, then seeded random restarts keep coming for a
+budget that grows with the number of pieces (10 seconds for small jobs, up to
+a minute for the largest — more panels means more stock to save), stopping
+early once hundreds of candidates in a row fail to improve. The best layout so far is rendered as soon as the first candidate
 finishes and again whenever a later one beats it, with the Calculate button
 doubling as a progress bar for the whole run. Each candidate is refined
 by a local-improvement pass that

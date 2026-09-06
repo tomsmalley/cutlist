@@ -8,8 +8,22 @@ import {
 import type { OptimizeResult, Strategy } from './optimizer';
 import type { CalcRequest, CalcResponse, SerializedResult } from './messages';
 
-/** How long to keep exploring random restarts after the deterministic pass. */
-const TIME_BUDGET_MS = 10000;
+/**
+ * How long random restarts run AFTER the deterministic pass. The budget grows
+ * with the size of the cut list: a bigger job has more stock to save and each
+ * candidate costs more to evaluate, so a flat budget would try the fewest
+ * layouts exactly where it matters most.
+ */
+const RESTART_MS_PER_PIECE = 200;
+const RESTART_BUDGET_MIN_MS = 10000;
+const RESTART_BUDGET_MAX_MS = 60000;
+
+function restartBudget(panels: CalcRequest['panels']): number {
+  const pieces = panels
+    .filter((p) => p.enabled && p.qty > 0 && p.length > 0 && p.width > 0)
+    .reduce((s, p) => s + p.qty, 0);
+  return Math.min(RESTART_BUDGET_MAX_MS, Math.max(RESTART_BUDGET_MIN_MS, pieces * RESTART_MS_PER_PIECE));
+}
 /** Stop early once this many candidates in a row fail to beat the best. */
 const STALE_LIMIT = 512;
 /** Wall-clock gap between progress posts (which double as abort checks). */
@@ -38,6 +52,7 @@ async function search(req: CalcRequest): Promise<void> {
   const { runId, panels, stock, options } = req;
   const start = Date.now();
   const deterministic = deterministicStrategies();
+  const budget = restartBudget(panels);
 
   let best: OptimizeResult | null = null;
   let bestScore: number[] = [];
@@ -66,12 +81,12 @@ async function search(req: CalcRequest): Promise<void> {
   let deterministicMs = 0;
   for (;;) {
     // The deterministic strategies always run in full; seeded shuffles then
-    // keep coming until the time budget is spent or the search goes stale.
+    // keep coming until the restart budget is spent or the search goes stale.
     let strategy: Strategy;
     if (i < deterministic.length) {
       strategy = deterministic[i++];
     } else {
-      if (Date.now() - start >= TIME_BUDGET_MS || stale >= STALE_LIMIT) break;
+      if (Date.now() - start - deterministicMs >= budget || stale >= STALE_LIMIT) break;
       strategy = shuffleStrategy(++seed);
     }
     consider(optimize(panels, stock, options, strategy));
@@ -81,13 +96,12 @@ async function search(req: CalcRequest): Promise<void> {
     if (now - lastProgress < PROGRESS_INTERVAL_MS) continue;
     lastProgress = now;
 
-    // A big project can spend longer on the deterministic pass than the whole
-    // time budget, so the bar tracks the longer of the two: the pass's
-    // duration is projected from the strategies finished so far.
+    // The bar spans both phases: the deterministic pass's duration is
+    // projected from the strategies finished so far, then the budget follows.
     const elapsed = now - start;
     const projected =
       i < deterministic.length ? (elapsed * deterministic.length) / i : deterministicMs;
-    const total = Math.max(TIME_BUDGET_MS, projected);
+    const total = projected + budget;
     lastPct = Math.max(lastPct, Math.min(99, Math.floor((100 * elapsed) / total)));
     post({ type: 'progress', runId, done: lastPct, total: 100 });
 
