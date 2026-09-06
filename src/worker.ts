@@ -12,8 +12,10 @@ import type { CalcRequest, CalcResponse, SerializedResult } from './messages';
 const TIME_BUDGET_MS = 10000;
 /** Stop early once this many candidates in a row fail to beat the best. */
 const STALE_LIMIT = 512;
-/** Candidates between yields back to the message queue (abort checks). */
-const CHUNK = 48;
+/** Wall-clock gap between progress posts (which double as abort checks). */
+const PROGRESS_INTERVAL_MS = 100;
+/** Minimum gap between interim result posts; each one re-renders the page. */
+const RESULT_INTERVAL_MS = 400;
 
 let currentRun = 0;
 
@@ -41,6 +43,10 @@ async function search(req: CalcRequest): Promise<void> {
   let bestScore: number[] = [];
   let tried = 0;
   let stale = 0;
+  let unshown = false;
+  let lastProgress = start;
+  let lastResult = -Infinity;
+  let lastPct = 0;
 
   const consider = (r: OptimizeResult): void => {
     tried++;
@@ -49,6 +55,7 @@ async function search(req: CalcRequest): Promise<void> {
       best = r;
       bestScore = score;
       stale = 0;
+      unshown = true;
     } else {
       stale++;
     }
@@ -56,6 +63,7 @@ async function search(req: CalcRequest): Promise<void> {
 
   let i = 0;
   let seed = 0;
+  let deterministicMs = 0;
   for (;;) {
     // The deterministic strategies always run in full; seeded shuffles then
     // keep coming until the time budget is spent or the search goes stale.
@@ -68,21 +76,31 @@ async function search(req: CalcRequest): Promise<void> {
     }
     consider(optimize(panels, stock, options, strategy));
 
-    // Show the deterministic best immediately; the budget refines it.
-    if (i === deterministic.length && seed === 0 && best) {
+    const now = Date.now();
+    if (i === deterministic.length && seed === 0) deterministicMs = now - start;
+    if (now - lastProgress < PROGRESS_INTERVAL_MS) continue;
+    lastProgress = now;
+
+    // A big project can spend longer on the deterministic pass than the whole
+    // time budget, so the bar tracks the longer of the two: the pass's
+    // duration is projected from the strategies finished so far.
+    const elapsed = now - start;
+    const projected =
+      i < deterministic.length ? (elapsed * deterministic.length) / i : deterministicMs;
+    const total = Math.max(TIME_BUDGET_MS, projected);
+    lastPct = Math.max(lastPct, Math.min(99, Math.floor((100 * elapsed) / total)));
+    post({ type: 'progress', runId, done: lastPct, total: 100 });
+
+    // Show the best so far as soon as there is one, and every improvement
+    // after that; the budget keeps refining it.
+    if (unshown && best && now - lastResult >= RESULT_INTERVAL_MS) {
+      lastResult = now;
+      unshown = false;
       post({ type: 'result', runId, tried, final: false, result: serialize(best) });
     }
 
-    if (tried % CHUNK === 0) {
-      post({
-        type: 'progress',
-        runId,
-        done: Math.min(Date.now() - start, TIME_BUDGET_MS - 1),
-        total: TIME_BUDGET_MS,
-      });
-      await yieldToQueue();
-      if (runId !== currentRun) return; // superseded by a newer request
-    }
+    await yieldToQueue();
+    if (runId !== currentRun) return; // superseded by a newer request
   }
 
   if (runId !== currentRun || !best) return;

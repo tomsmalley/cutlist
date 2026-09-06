@@ -441,68 +441,141 @@ function stripLen(st: Item[], kerf: number): number {
   return st.reduce((s, i) => s + i.w, 0) + kerf * (st.length - 1);
 }
 
-function stripFeasible(st: Item[], spec: StockSpec, kerf: number, cap: number, os: number): boolean {
+/*
+ * Strips and sheets are immutable once they enter a layout: every move
+ * builds fresh arrays for the strips it changes and fresh objects for the
+ * sheets holding them, sharing everything else. Their identities are
+ * therefore sound cache keys for anything derived from them alone. The
+ * caches are module-wide because optimize() never reuses an object across
+ * calls, so entries from one run can never be seen by another.
+ */
+
+/** Everything a strip contributes to feasibility and the objective on its own. */
+interface StripInfo {
+  physH: number;
+  len: number;
+  /** Trim rule and rotation lock hold (the sheet still checks the length). */
+  valid: boolean;
+  /** Separating cuts between pieces; the sheet adds one more for an offcut. */
+  separating: number;
+  /** Whether separating cuts run longer than the cross-cut capacity. */
+  tallCut: boolean;
+  trimsStd: number;
+  trimsNonstd: number;
+  mix: number;
+}
+
+const stripInfos = new WeakMap<Item[], StripInfo>();
+
+function stripInfo(st: Item[], kerf: number, cap: number, os: number): StripInfo {
+  const cached = stripInfos.get(st);
+  if (cached) return cached;
   const physH = stripPhysH(st, os, cap);
-  const len = stripLen(st, kerf);
-  if (len > spec.length) return false;
-  // Cuts longer than the capacity are legal (non-standard, scored heavily by
-  // improveObjective), so height and width impose no feasibility limit here.
-  for (const it of st) {
-    // Trimmable pieces must actually be trimmed (see bestFitInSheet).
-    if (it.h >= physH && os > 0 && it.w <= cap && it.h + os <= cap) return false;
-  }
-  // Rotation lock: same panel, same orientation within a strip.
+  let valid = true;
+  let trimsStd = 0;
+  let trimsNonstd = 0;
   const rot = new Map<string, boolean>();
   for (const it of st) {
+    // Cuts longer than the capacity are legal (non-standard, scored heavily
+    // by improveObjective), so height and width impose no limit here — but
+    // trimmable pieces must actually be trimmed (see bestFitInSheet)...
+    if (it.h >= physH && os > 0 && it.w <= cap && it.h + os <= cap) valid = false;
+    // ...and a panel keeps one orientation within a strip.
     const r = rot.get(it.panelId);
-    if (r !== undefined && r !== it.rotated) return false;
+    if (r !== undefined && r !== it.rotated) valid = false;
     rot.set(it.panelId, it.rotated);
+    if (it.h < physH) {
+      if (isNonStandard(it.w, cap)) trimsNonstd++;
+      else trimsStd++;
+    }
   }
-  return true;
+  const info: StripInfo = {
+    physH,
+    len: stripLen(st, kerf),
+    valid,
+    separating: st.length - 1,
+    tallCut: isNonStandard(physH, cap),
+    trimsStd,
+    trimsNonstd,
+    mix: Math.max(0, rot.size - 1),
+  };
+  stripInfos.set(st, info);
+  return info;
 }
 
 function sheetFeasible(sh: ISheet, kerf: number, cap: number, os: number): boolean {
-  const used =
-    sh.strips.reduce((s, st) => s + stripPhysH(st, os, cap), 0) + kerf * (sh.strips.length - 1);
-  if (used > sh.spec.width) return false;
-  return sh.strips.every((st) => st.length > 0 && stripFeasible(st, sh.spec, kerf, cap, os));
+  let used = kerf * (sh.strips.length - 1);
+  for (const st of sh.strips) {
+    if (st.length === 0) return false;
+    const info = stripInfo(st, kerf, cap, os);
+    if (!info.valid || info.len > sh.spec.length) return false;
+    used += info.physH;
+  }
+  return used <= sh.spec.width;
+}
+
+const sheetObjectives = new WeakMap<ISheet, number[]>();
+const sheetIds = new WeakMap<ISheet, number>();
+let nextSheetId = 1;
+
+function sheetId(sh: ISheet): number {
+  let id = sheetIds.get(sh);
+  if (id === undefined) {
+    id = nextSheetId++;
+    sheetIds.set(sh, id);
+  }
+  return id;
+}
+
+/** One sheet's additive share of the objective: [area, weighted cuts, mix, strip area]. */
+function sheetObjective(sh: ISheet, kerf: number, cap: number, os: number): number[] {
+  const cached = sheetObjectives.get(sh);
+  if (cached) return cached;
+  let rips = 0;
+  let crosses = 0;
+  let nonstd = 0;
+  let mix = 0;
+  let stripArea = 0;
+  let y = 0;
+  for (const st of sh.strips) {
+    const info = stripInfo(st, kerf, cap, os);
+    stripArea += info.physH * sh.spec.length;
+    y += info.physH;
+    if (y < sh.spec.width) rips++;
+    y += kerf;
+    const separating = info.separating + (info.len < sh.spec.length ? 1 : 0);
+    if (info.tallCut) nonstd += separating;
+    else crosses += separating;
+    crosses += info.trimsStd;
+    nonstd += info.trimsNonstd;
+    mix += info.mix;
+  }
+  const obj = [
+    sh.spec.length * sh.spec.width,
+    RIP_WEIGHT * rips + crosses + NONSTD_WEIGHT * nonstd,
+    mix,
+    stripArea,
+  ];
+  sheetObjectives.set(sh, obj);
+  return obj;
 }
 
 /** Same ordering as scoreResult, minus the components moves cannot change. */
 function improveObjective(layout: ISheet[], kerf: number, cap: number, os: number): number[] {
   let totalArea = 0;
-  let rips = 0;
-  let crosses = 0;
-  let nonstd = 0;
+  let cuts = 0;
   let mix = 0;
   let sumSq = 0;
   let stripArea = 0;
   for (const sh of layout) {
-    const area = sh.spec.length * sh.spec.width;
+    const [area, c, m, s] = sheetObjective(sh, kerf, cap, os);
     totalArea += area;
     sumSq += area * area;
-    let y = 0;
-    for (const st of sh.strips) {
-      const h = stripPhysH(st, os, cap);
-      stripArea += h * sh.spec.length;
-      y += h;
-      if (y < sh.spec.width) rips++;
-      y += kerf;
-      let separating = st.length - 1;
-      if (stripLen(st, kerf) < sh.spec.length) separating++;
-      if (isNonStandard(h, cap)) nonstd += separating;
-      else crosses += separating;
-      for (const it of st) {
-        if (it.h < h) {
-          if (isNonStandard(it.w, cap)) nonstd++;
-          else crosses++;
-        }
-      }
-      const kinds = new Set(st.map((i) => i.panelId));
-      if (kinds.size > 1) mix += kinds.size - 1;
-    }
+    cuts += c;
+    mix += m;
+    stripArea += s;
   }
-  return [totalArea, RIP_WEIGHT * rips + crosses + NONSTD_WEIGHT * nonstd, mix, sumSq, stripArea];
+  return [totalArea, cuts, mix, sumSq, stripArea];
 }
 
 /** Group same-panel items adjacent, ordered by first appearance. */
@@ -512,14 +585,19 @@ function groupItems(items: Item[]): Item[] {
   return [...items].sort((a, b) => order.get(a.panelId)! - order.get(b.panelId)!);
 }
 
-function insertGrouped(st: Item[], item: Item): void {
+/** A copy of the strip with the item added next to its own kind (or at the end). */
+function withGrouped(st: Item[], item: Item): Item[] {
   for (let i = st.length - 1; i >= 0; i--) {
     if (st[i].panelId === item.panelId) {
-      st.splice(i + 1, 0, item);
-      return;
+      return [...st.slice(0, i + 1), item, ...st.slice(i + 1)];
     }
   }
-  st.push(item);
+  return [...st, item];
+}
+
+/** A copy of the strip without the item at k. */
+function without(st: Item[], k: number): Item[] {
+  return st.filter((_, idx) => idx !== k);
 }
 
 /** Orientations an item may take in a target strip (alignment + strip lock). */
@@ -537,10 +615,14 @@ function orientedItems(spec: PanelSpec, targetStrip: Item[] | null): Item[] {
   return opts;
 }
 
-function cloneFor(layout: ISheet[], a: number, b: number): ISheet[] {
-  return layout.map((sh, idx) =>
-    idx === a || idx === b ? { spec: sh.spec, strips: sh.strips.map((st) => st.slice()) } : sh
-  );
+/**
+ * Copy the sheets about to be modified; every other sheet is shared, and so
+ * are the strips of the copied sheets — callers replace the strips they
+ * change rather than editing them in place.
+ */
+function cloneFor(layout: ISheet[], touched: Iterable<number>): ISheet[] {
+  const set = new Set(touched);
+  return layout.map((sh, idx) => (set.has(idx) ? { spec: sh.spec, strips: sh.strips.slice() } : sh));
 }
 
 function pruneAndCheck(
@@ -569,10 +651,10 @@ function applyRelocate(
   cap: number,
   os: number
 ): ISheet[] | null {
-  const clone = cloneFor(layout, a, b);
-  clone[a].strips[i].splice(k, 1);
+  const clone = cloneFor(layout, [a, b]);
+  clone[a].strips[i] = without(clone[a].strips[i], k);
   if (j >= clone[b].strips.length) clone[b].strips.push([item]);
-  else insertGrouped(clone[b].strips[j], item);
+  else clone[b].strips[j] = withGrouped(clone[b].strips[j], item);
   return pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap, os);
 }
 
@@ -600,11 +682,11 @@ function applySwapVariants(
   const variants: ISheet[][] = [];
   for (const po of pOpts) {
     for (const qo of qOpts) {
-      const clone = cloneFor(layout, a, b);
-      clone[a].strips[i].splice(k, 1);
-      clone[b].strips[j].splice(l, 1);
-      insertGrouped(clone[b].strips[j], po);
-      insertGrouped(clone[a].strips[i], qo);
+      const clone = cloneFor(layout, [a, b]);
+      clone[a].strips[i] = without(clone[a].strips[i], k);
+      clone[b].strips[j] = without(clone[b].strips[j], l);
+      clone[b].strips[j] = withGrouped(clone[b].strips[j], po);
+      clone[a].strips[i] = withGrouped(clone[a].strips[i], qo);
       const pruned = pruneAndCheck(clone, a === b ? [a] : [a, b], kerf, cap, os);
       if (pruned) variants.push(pruned);
     }
@@ -625,6 +707,15 @@ function applySwapVariants(
 const REPACK_MAX_GROUPS = 6;
 const REPACK_MAX_ITEMS = 40;
 const REPACK_NODE_BUDGET = 20000;
+const PACK_CACHE_LIMIT = 4000;
+
+/**
+ * packClass is a pure function of its arguments, and the same class of
+ * pieces is re-solved over and over: after every move that touches one of
+ * its sheets, and again by every strategy that lays the pieces out the same
+ * way. Keyed on the full argument list, so a hit is exact.
+ */
+const packCache = new Map<string, number[][] | null>();
 
 /**
  * Exact 1-D bin packing of grouped pieces: fewest bins first, then least
@@ -704,14 +795,11 @@ function packClass(
   return best;
 }
 
-function cloneAll(layout: ISheet[]): ISheet[] {
-  return layout.map((sh) => ({ spec: sh.spec, strips: sh.strips.map((st) => st.slice()) }));
-}
-
 function tryRepackClass(
   layout: ISheet[],
   v: number,
   includeStrays: boolean,
+  tried: Set<string>,
   kerf: number,
   cap: number,
   os: number
@@ -732,6 +820,14 @@ function tryRepackClass(
   }
   if (slots.length === 0 || (slots.length < 2 && strays.length === 0)) return null;
 
+  // The outcome depends only on the sheets holding this class, so with those
+  // unchanged since the last attempt the answer is already known.
+  const touched = new Set<number>(slots.map((s) => s.sheet));
+  for (const s of strays) touched.add(s.sheet);
+  const key = `${v}|${includeStrays ? 1 : 0}|${[...touched].map((a) => sheetId(layout[a])).join(',')}`;
+  if (tried.has(key)) return null;
+  tried.add(key);
+
   const pool: Item[] = [];
   for (const s of slots) pool.push(...layout[s.sheet].strips[s.strip]);
   for (const s of strays) pool.push(layout[s.sheet].strips[s.strip][s.item]);
@@ -746,7 +842,10 @@ function tryRepackClass(
     else groups.set(key, [it]);
   }
   if (groups.size > REPACK_MAX_GROUPS) return null;
-  const members = [...groups.values()];
+  // Canonical group order (widest first) so equal classes share cache hits.
+  const members = [...groups.values()].sort(
+    (a, b) => b[0].w - a[0].w || a[0].panelId.localeCompare(b[0].panelId) || +a[0].rotated - +b[0].rotated
+  );
   const widths = members.map((g) => g[0].w);
   const panels = members.map((g) => g[0].panelId);
   const counts = members.map((g) => g.length);
@@ -754,13 +853,19 @@ function tryRepackClass(
   const slotLens = slots
     .map((s) => layout[s.sheet].spec.length)
     .sort((a, b) => b - a);
-  const bins = packClass(widths, panels, counts, slotLens[0], kerf);
+  const packKey = JSON.stringify([widths, panels, counts, slotLens[0], kerf]);
+  let bins = packCache.get(packKey);
+  if (bins === undefined) {
+    bins = packClass(widths, panels, counts, slotLens[0], kerf);
+    if (packCache.size >= PACK_CACHE_LIMIT) packCache.clear();
+    packCache.set(packKey, bins);
+  }
   if (!bins || bins.length > slots.length) return null;
 
   // Longest bins claim the longest-sheet slots; the rest of the slots close.
   const binLen = (b: number[]) =>
     b.reduce((s, c, i) => s + c * widths[i], 0) + kerf * (b.reduce((s, c) => s + c, 0) - 1);
-  bins.sort((a, b) => binLen(b) - binLen(a));
+  bins = [...bins].sort((a, b) => binLen(b) - binLen(a)); // the cached array stays untouched
   const orderedSlots = [...slots].sort(
     (a, b) => layout[b.sheet].spec.length - layout[a.sheet].spec.length
   );
@@ -768,7 +873,7 @@ function tryRepackClass(
     if (binLen(bins[i]) > layout[orderedSlots[i].sheet].spec.length) return null;
   }
 
-  const clone = cloneAll(layout);
+  const clone = cloneFor(layout, touched);
   const byStrip = new Map<string, number[]>();
   for (const s of strays) {
     const key = `${s.sheet}:${s.strip}`;
@@ -778,7 +883,8 @@ function tryRepackClass(
   }
   for (const [key, items] of byStrip) {
     const [a, i] = key.split(':').map(Number);
-    for (const k of items.sort((x, y) => y - x)) clone[a].strips[i].splice(k, 1);
+    const gone = new Set(items);
+    clone[a].strips[i] = clone[a].strips[i].filter((_, k) => !gone.has(k));
   }
   const pools = members.map((g) => g.slice());
   for (let i = 0; i < orderedSlots.length; i++) {
@@ -790,14 +896,13 @@ function tryRepackClass(
     }
     clone[orderedSlots[i].sheet].strips[orderedSlots[i].strip] = target;
   }
-  const touched = new Set<number>(orderedSlots.map((s) => s.sheet));
-  for (const s of strays) touched.add(s.sheet);
   return pruneAndCheck(clone, [...touched], kerf, cap, os);
 }
 
 function findClassRepack(
   layout: ISheet[],
   obj: number[],
+  tried: Set<string>,
   kerf: number,
   cap: number,
   os: number
@@ -806,7 +911,7 @@ function findClassRepack(
   for (const sh of layout) for (const st of sh.strips) heights.add(stripH(st));
   for (const v of [...heights].sort((a, b) => b - a)) {
     for (const includeStrays of [true, false]) {
-      const cand = tryRepackClass(layout, v, includeStrays, kerf, cap, os);
+      const cand = tryRepackClass(layout, v, includeStrays, tried, kerf, cap, os);
       if (!cand) continue;
       const candObj = improveObjective(cand, kerf, cap, os);
       if (compareScores(candObj, obj) < 0) return { layout: cand, obj: candObj };
@@ -815,10 +920,21 @@ function findClassRepack(
   return null;
 }
 
+/**
+ * Every move touches at most two sheets, and whether it improves the layout
+ * depends on those two alone. A pass over sheet a that finds nothing has
+ * exhausted every (a, b) pair; later rounds skip pairs whose sheets both
+ * survived untouched, so each round costs O(changed sheets), not O(sheets²).
+ */
+function pairKey(a: ISheet, b: ISheet): string {
+  return `${sheetId(a)}:${sheetId(b)}`;
+}
+
 function findImprovingMove(
   layout: ISheet[],
   obj: number[],
   byId: Map<string, PanelSpec>,
+  exhausted: Set<string>,
   kerf: number,
   cap: number,
   os: number,
@@ -832,6 +948,7 @@ function findImprovingMove(
 
         // Relocations (including to a brand-new strip on any sheet).
         for (let b = 0; b < layout.length; b++) {
+          if (exhausted.has(pairKey(layout[a], layout[b]))) continue;
           const stripCount = layout[b].strips.length;
           for (let j = 0; j <= stripCount; j++) {
             if (a === b && j === i) continue;
@@ -848,6 +965,7 @@ function findImprovingMove(
         if (!allowSwaps) continue;
         // Swaps with every placement strictly after (a, i, k).
         for (let b = a; b < layout.length; b++) {
+          if (exhausted.has(pairKey(layout[a], layout[b]))) continue;
           const jStart = b === a ? i + 1 : 0;
           for (let j = jStart; j < layout[b].strips.length; j++) {
             for (let l = 0; l < layout[b].strips[j].length; l++) {
@@ -860,6 +978,8 @@ function findImprovingMove(
         }
       }
     }
+    // Nothing moved out of sheet a (or swapped with it): every pair is spent.
+    for (let b = 0; b < layout.length; b++) exhausted.add(pairKey(layout[a], layout[b]));
   }
   return null;
 }
@@ -876,10 +996,12 @@ function improve(
   const allowSwaps = itemCount <= MAX_SWAP_ITEMS;
   let current = layout;
   let obj = improveObjective(current, kerf, cap, os);
+  const repacksTried = new Set<string>();
+  const pairsExhausted = new Set<string>();
   for (let round = 0; round < MAX_IMPROVE_ROUNDS; round++) {
     const next =
-      findClassRepack(current, obj, kerf, cap, os) ??
-      findImprovingMove(current, obj, byId, kerf, cap, os, allowSwaps);
+      findClassRepack(current, obj, repacksTried, kerf, cap, os) ??
+      findImprovingMove(current, obj, byId, pairsExhausted, kerf, cap, os, allowSwaps);
     if (!next) break;
     current = next.layout;
     obj = next.obj;
