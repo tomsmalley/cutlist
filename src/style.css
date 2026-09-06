@@ -620,6 +620,14 @@ tr.row-disabled .align {
   opacity: 0.6;
 }
 
+/* Non-standard cross cuts (longer than the capacity): solid and loud. */
+.cross-line.nonstd {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
+  opacity: 0.9;
+}
+
 .hit-line {
   stroke: rgba(0, 0, 0, 0);
   stroke-width: 18;
@@ -743,6 +751,15 @@ tr.row-disabled .align {
   color: var(--muted);
 }
 
+.cut-nonstd {
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.stat-nonstd .stat-value {
+  color: var(--accent-hover);
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -808,6 +825,12 @@ tr.row-disabled .align {
     stroke-width: 0.8;
     stroke-dasharray: 3 2.5;
     opacity: 0.8;
+  }
+
+  .cross-line.nonstd {
+    stroke-width: 2;
+    stroke-dasharray: none;
+    opacity: 1;
   }
 
   .dim-label,

@@ -26,9 +26,10 @@ export interface Options {
   kerf: number;
   /**
    * Longest cut the cross-cut station can make (mm) — the hinged-rail
-   * equivalent of "how deep a piece can be cut across". Strips that need
-   * cross cuts must not be taller than this, and a piece can only be trimmed
-   * (a cross cut along its long axis after rotating it) if its width fits.
+   * equivalent of "how deep a piece can be cut across". Separating cuts in a
+   * strip taller than this, or a trim (a cross cut along the piece after
+   * rotating it) on a piece wider than this, are NON-STANDARD cuts: still
+   * allowed, made with the long track instead, and heavily penalised.
    */
   crossCutCap: number;
   /**

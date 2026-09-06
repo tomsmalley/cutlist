@@ -110,7 +110,8 @@ export function shuffleStrategy(seed: number): Strategy {
  * and never again after cross cutting. Everything else is a cross cut on the
  * hinged rail: separating cuts across a strip, plus one trim cut per piece
  * that sits below its strip height (the piece is rotated and cut along its
- * long axis, so its width must fit the cross-cut capacity).
+ * long axis). A cross cut longer than the capacity is still possible with
+ * the long track — a NON-STANDARD cut, weighted NONSTD_WEIGHT.
  *
  * Lexicographic layout quality, lower is better:
  *   unplaced panel area → sheets consumed (total stock area) → weighted cuts
@@ -126,9 +127,30 @@ export function shuffleStrategy(seed: number): Strategy {
  */
 const RIP_WEIGHT = 3;
 
-export function scoreResult(r: OptimizeResult): number[] {
+/**
+ * A NON-STANDARD cross cut — one longer than the cross-cut capacity, so it
+ * cannot be made at the station and needs the long track set up on the
+ * workpiece — costs this many standard cross cuts. Heavy enough that the
+ * packer only resorts to one when it saves a sheet or places a panel that
+ * would otherwise not fit, never merely to save a rip or two.
+ */
+export const NONSTD_WEIGHT = 10;
+
+/** The cross-cut capacity as a bound (0 = unlimited). */
+export function crossCap(options: Options): number {
+  return options.crossCutCap > 0 ? options.crossCutCap : Infinity;
+}
+
+/** Whether a cross cut of this length exceeds the station's capacity. */
+export function isNonStandard(cutLength: number, cap: number): boolean {
+  return cutLength > cap;
+}
+
+export function scoreResult(r: OptimizeResult, options: Options): number[] {
+  const cap = crossCap(options);
   let rips = 0;
   let crosses = 0;
+  let nonstd = 0;
   let mix = 0;
   let sumSq = 0;
   for (const sheet of r.sheets) {
@@ -140,15 +162,31 @@ export function scoreResult(r: OptimizeResult): number[] {
         .filter((p) => p.y === strip.y)
         .sort((a, b) => a.x - b.x);
       if (items.length === 0) continue;
-      crosses += items.length - 1;
+      // Separating cuts run across the strip (length = strip height).
+      let separating = items.length - 1;
       const last = items[items.length - 1];
-      if (last.x + last.w < sheet.length) crosses++;
-      for (const p of items) if (p.h < strip.h) crosses++;
+      if (last.x + last.w < sheet.length) separating++;
+      if (isNonStandard(strip.h, cap)) nonstd += separating;
+      else crosses += separating;
+      // Trims run along the piece (length = piece width).
+      for (const p of items) {
+        if (p.h < strip.h) {
+          if (isNonStandard(p.w, cap)) nonstd++;
+          else crosses++;
+        }
+      }
       const kinds = new Set(items.map((p) => p.panelId));
       if (kinds.size > 1) mix += kinds.size - 1;
     }
   }
-  return [r.unplacedArea, r.totalSheetArea, RIP_WEIGHT * rips + crosses, mix, sumSq, r.stripArea];
+  return [
+    r.unplacedArea,
+    r.totalSheetArea,
+    RIP_WEIGHT * rips + crosses + NONSTD_WEIGHT * nonstd,
+    mix,
+    sumSq,
+    r.stripArea,
+  ];
 }
 
 export function compareScores(a: number[], b: number[]): number {
@@ -250,6 +288,7 @@ interface OpenSheet {
   placements: Placement[];
 }
 
+/** Greedy fit rank: non-standard cuts needed, affinity category, then fit. */
 type Score = [number, number, number, number];
 
 function lessThan(a: Score, b: Score): boolean {
@@ -295,15 +334,18 @@ function bestFitInSheet(
   let best: Candidate | null = null;
 
   for (const orient of orients) {
-    // Existing strips: fit the strip height, remaining length, this strip's
-    // rotation lock for the panel, and the cross-cut rules — a shared strip
-    // gets separating cross cuts (strip height ≤ capacity) and any trim is a
-    // cross cut along the piece (piece width ≤ capacity).
+    // Existing strips: fit the strip height, remaining length, and this
+    // strip's rotation lock for the panel. A shared strip gets separating
+    // cross cuts (across the strip height) and any trim is a cross cut along
+    // the piece (its width); either one longer than the capacity is a
+    // non-standard cut, allowed but ranked behind every standard fit.
     for (const strip of sheet.strips) {
       if (orient.h > strip.h) continue;
-      if (strip.h + (strip.oversized ? os : 0) > cap) continue;
+      const physH = strip.h + (strip.oversized ? os : 0);
       const trimmed = strip.oversized || orient.h < strip.h;
-      if (trimmed && orient.w > cap) continue;
+      // Oversized strips exist to trim at the station; keep them to pieces
+      // whose trim fits the capacity (see stripOversized).
+      if (strip.oversized && orient.w > cap) continue;
       // An untrimmed edge on a trimmable piece defeats the option: such a
       // piece belongs in an oversized strip, never flush in an exact one.
       if (!trimmed && oversizable(orient, os, cap)) continue;
@@ -311,29 +353,30 @@ function bestFitInSheet(
       if (locked !== undefined && orient.rotated !== locked) continue;
       const xStart = strip.usedLength === 0 ? 0 : strip.usedLength + kerf;
       if (xStart + orient.w > sheetL) continue;
+      const nonstd =
+        (isNonStandard(physH, cap) ? 1 : 0) + (trimmed && isNonStandard(orient.w, cap) ? 1 : 0);
       const cat = locked !== undefined ? catSame : catOther;
       const heightWaste = strip.h - orient.h;
       const leftoverLen = sheetL - (xStart + orient.w);
       const score: Score =
         strategy.stripFit === 'height'
-          ? [cat, heightWaste, leftoverLen, 0]
-          : [cat, leftoverLen, heightWaste, 0];
+          ? [nonstd, cat, heightWaste, leftoverLen]
+          : [nonstd, cat, leftoverLen, heightWaste];
       if (!best || lessThan(score, best.score))
         best = { sheet, strip, orient, oversized: strip.oversized, score };
     }
     // New strip: needs remaining sheet width. A trimmable piece opens an
-    // oversized strip; otherwise a strip taller than the cross-cut capacity
-    // can never be cross cut, so it may only hold a single panel spanning the
-    // full sheet length (no cuts after the rips).
+    // oversized strip. A strip taller than the cross-cut capacity needs a
+    // non-standard cut to separate anything from it, unless its single panel
+    // spans the full sheet length (no cuts after the rips).
     const canOs = oversizable(orient, os, cap);
     const yStart = sheet.usedWidth === 0 ? 0 : sheet.usedWidth + kerf;
     if (orient.w <= sheetL && yStart + orient.h + (canOs ? os : 0) <= sheetW) {
-      if (canOs || orient.h <= cap || orient.w === sheetL) {
-        const heightKey = strategy.newStripPref === 'short' ? orient.h : -orient.h;
-        const score: Score = [catNew, heightKey, sheetL - orient.w, 0];
-        if (!best || lessThan(score, best.score))
-          best = { sheet, strip: null, orient, oversized: canOs, score };
-      }
+      const nonstd = isNonStandard(orient.h, cap) && orient.w < sheetL ? 1 : 0;
+      const heightKey = strategy.newStripPref === 'short' ? orient.h : -orient.h;
+      const score: Score = [nonstd, catNew, heightKey, sheetL - orient.w];
+      if (!best || lessThan(score, best.score))
+        best = { sheet, strip: null, orient, oversized: canOs, score };
     }
   }
   return best;
@@ -402,10 +445,9 @@ function stripFeasible(st: Item[], spec: StockSpec, kerf: number, cap: number, o
   const physH = stripPhysH(st, os, cap);
   const len = stripLen(st, kerf);
   if (len > spec.length) return false;
-  const needsSeparating = st.length > 1 || len < spec.length;
-  if (needsSeparating && physH > cap) return false;
+  // Cuts longer than the capacity are legal (non-standard, scored heavily by
+  // improveObjective), so height and width impose no feasibility limit here.
   for (const it of st) {
-    if (it.h < physH && it.w > cap) return false;
     // Trimmable pieces must actually be trimmed (see bestFitInSheet).
     if (it.h >= physH && os > 0 && it.w <= cap && it.h + os <= cap) return false;
   }
@@ -431,6 +473,7 @@ function improveObjective(layout: ISheet[], kerf: number, cap: number, os: numbe
   let totalArea = 0;
   let rips = 0;
   let crosses = 0;
+  let nonstd = 0;
   let mix = 0;
   let sumSq = 0;
   let stripArea = 0;
@@ -445,14 +488,21 @@ function improveObjective(layout: ISheet[], kerf: number, cap: number, os: numbe
       y += h;
       if (y < sh.spec.width) rips++;
       y += kerf;
-      crosses += st.length - 1;
-      if (stripLen(st, kerf) < sh.spec.length) crosses++;
-      for (const it of st) if (it.h < h) crosses++;
+      let separating = st.length - 1;
+      if (stripLen(st, kerf) < sh.spec.length) separating++;
+      if (isNonStandard(h, cap)) nonstd += separating;
+      else crosses += separating;
+      for (const it of st) {
+        if (it.h < h) {
+          if (isNonStandard(it.w, cap)) nonstd++;
+          else crosses++;
+        }
+      }
       const kinds = new Set(st.map((i) => i.panelId));
       if (kinds.size > 1) mix += kinds.size - 1;
     }
   }
-  return [totalArea, RIP_WEIGHT * rips + crosses, mix, sumSq, stripArea];
+  return [totalArea, RIP_WEIGHT * rips + crosses + NONSTD_WEIGHT * nonstd, mix, sumSq, stripArea];
 }
 
 /** Group same-panel items adjacent, ordered by first appearance. */
@@ -846,7 +896,7 @@ export function optimize(
   strategy: Strategy = DEFAULT_STRATEGY
 ): OptimizeResult {
   const kerf = Math.max(0, options.kerf || 0);
-  const cap = options.crossCutCap > 0 ? options.crossCutCap : Infinity;
+  const cap = crossCap(options);
   const os = options.ripOversized ? RIP_OVERSIZE : 0;
 
   const instances = panels
@@ -891,17 +941,14 @@ export function optimize(
       }
     }
 
-    // Smallest unopened stock sheet the panel is cuttable from.
+    // Smallest unopened stock sheet the panel fits on (any cut the panel
+    // then needs is at worst non-standard, never impossible).
     let chosenStock: { spec: StockSpec; remaining: number } | null = null;
     for (const s of stockPool) {
       if (s.remaining <= 0) continue;
       const fits = orients.some((o) => {
         const canOs = oversizable(o, os, cap);
-        return (
-          o.w <= s.spec.length &&
-          o.h + (canOs ? os : 0) <= s.spec.width &&
-          (canOs || o.h <= cap || o.w === s.spec.length)
-        );
+        return o.w <= s.spec.length && o.h + (canOs ? os : 0) <= s.spec.width;
       });
       if (!fits) continue;
       if (!chosenStock || specArea(s.spec) < specArea(chosenStock.spec)) chosenStock = s;

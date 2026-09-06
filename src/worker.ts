@@ -44,7 +44,7 @@ async function search(req: CalcRequest): Promise<void> {
 
   const consider = (r: OptimizeResult): void => {
     tried++;
-    const score = scoreResult(r);
+    const score = scoreResult(r, options);
     if (!best || compareScores(score, bestScore) < 0) {
       best = r;
       bestScore = score;

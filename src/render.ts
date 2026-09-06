@@ -1,5 +1,6 @@
+import { crossCap, isNonStandard } from './optimizer';
 import type { OptimizeResult } from './optimizer';
-import type { PanelSpec } from './types';
+import type { Options, PanelSpec } from './types';
 
 /** Leftovers narrower than this (mm) are sheer waste, not reusable offcuts. */
 const MIN_OFFCUT = 60;
@@ -21,11 +22,14 @@ export function renderResults(
   container: HTMLElement,
   result: OptimizeResult,
   panels: PanelSpec[],
-  kerf: number,
-  ripOversized: boolean,
+  options: Options,
   layoutsTried?: number
 ): void {
   const { sheets, unplaced, placedCount, totalPanelArea, totalSheetArea } = result;
+  const { kerf, ripOversized } = options;
+  const cap = crossCap(options);
+  const nonstdTag = (len: number) =>
+    ` <span class="cut-nonstd" title="Longer than the cross cut capacity — long track, not the station">(non-standard: ${fmt(len)} cut)</span>`;
 
   if (sheets.length === 0 && unplaced.size === 0) {
     container.innerHTML = '<div class="results-empty">Nothing to place — add some panels and stock sheets.</div>';
@@ -39,6 +43,21 @@ export function renderResults(
 
   const efficiency = totalSheetArea > 0 ? (totalPanelArea / totalSheetArea) * 100 : 0;
 
+  // Cross cuts longer than the capacity: separating cuts in over-tall strips
+  // and trims on over-wide pieces.
+  let nonstdCount = 0;
+  for (const sheet of sheets) {
+    for (const strip of sheet.strips) {
+      const items = sheet.placements.filter((p) => p.y === strip.y);
+      if (items.length === 0) continue;
+      if (isNonStandard(strip.h, cap)) {
+        nonstdCount += items.length - 1;
+        if (Math.max(...items.map((p) => p.x + p.w)) < sheet.length) nonstdCount++;
+      }
+      for (const p of items) if (p.h < strip.h && isNonStandard(p.w, cap)) nonstdCount++;
+    }
+  }
+
   let html = `
     <div class="stats-bar">
       <div class="stat"><span class="stat-value">${sheets.length}</span><span class="stat-label">sheets used</span></div>
@@ -46,6 +65,7 @@ export function renderResults(
       <div class="stat"><span class="stat-value">${efficiency.toFixed(1)}%</span><span class="stat-label">material used</span></div>
       <div class="stat"><span class="stat-value">${((totalSheetArea - totalPanelArea) / 1e6).toFixed(2)} m²</span><span class="stat-label">waste</span></div>
       ${layoutsTried ? `<div class="stat"><span class="stat-value">${layoutsTried}</span><span class="stat-label">layouts tried</span></div>` : ''}
+      ${nonstdCount ? `<div class="stat stat-nonstd"><span class="stat-value">${nonstdCount}</span><span class="stat-label">non-standard cut${nonstdCount === 1 ? '' : 's'}</span></div>` : ''}
     </div>`;
 
   if (unplaced.size > 0) {
@@ -209,14 +229,16 @@ export function renderResults(
       }
     }
     for (const { strip, si, items, runIdxOf } of stripData) {
+      const sepCls = isNonStandard(strip.h, cap) ? 'cross-line nonstd' : 'cross-line';
       items.forEach((p, k) => {
         const ri = runIdxOf[k];
         const cutX = p.x + p.w;
         if (cutX < sheet.length) {
-          svg += cutLine(cutX, strip.y, cutX, strip.y + strip.h, 'cross-line', `c${i}-${si}-${ri}`);
+          svg += cutLine(cutX, strip.y, cutX, strip.y + strip.h, sepCls, `c${i}-${si}-${ri}`);
         }
         if (p.h < strip.h) {
-          svg += cutLine(p.x, p.y + p.h, p.x + p.w, p.y + p.h, 'cross-line', `t${i}-${si}-${ri}`);
+          const trimCls = isNonStandard(p.w, cap) ? 'cross-line nonstd' : 'cross-line';
+          svg += cutLine(p.x, p.y + p.h, p.x + p.w, p.y + p.h, trimCls, `t${i}-${si}-${ri}`);
         }
       });
     }
@@ -240,13 +262,15 @@ export function renderResults(
       } else {
         runs.forEach((r, ri) => {
           let li = `Cross cut ${r.count} × ${esc(r.label)} @ <b>${fmt(r.w)}</b>.`;
+          if (isNonStandard(strip.h, cap)) li += nonstdTag(strip.h);
           if (r.h < strip.h) {
             const trimOff = strip.h - r.h - kerf;
             const offNote =
               Math.min(r.w, trimOff) >= MIN_OFFCUT
                 ? `<li class="offcut-note" data-cut="">offcut ${r.count > 1 ? `${r.count} × ` : ''}${fmt(r.w)} × ${fmt(trimOff)}</li>`
                 : '';
-            li += `<ol><li data-cut="t${i}-${si}-${ri}">Cross cut ${r.count === 1 ? 'it' : 'each'} down to <b>${fmt(r.h)}</b>.</li>${offNote}</ol>`;
+            const trimTag = isNonStandard(r.w, cap) ? nonstdTag(r.w) : '';
+            li += `<ol><li data-cut="t${i}-${si}-${ri}">Cross cut ${r.count === 1 ? 'it' : 'each'} down to <b>${fmt(r.h)}</b>.${trimTag}</li>${offNote}</ol>`;
           }
           inner += `<li data-cut="c${i}-${si}-${ri}">${li}</li>`;
         });

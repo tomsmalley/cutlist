@@ -12,10 +12,14 @@ The layout algorithm matches a **small-workshop tracksaw workflow**:
   later cut is a cross cut — no layout is ever produced that would need a
   rip after cross cutting.
 - **Cross-cut capacity** (option, default 700mm) models a hinged-rail
-  cross-cut station: a strip that needs separating cuts can't be taller
-  than the capacity, and a panel sitting below its strip height is trimmed
-  by rotating the piece and cross cutting along it — only legal if the
-  piece's width fits the capacity.
+  cross-cut station: separating cuts run across the strip height, and a
+  panel sitting below its strip height is trimmed by rotating the piece and
+  cross cutting along it, so the cut is as long as the piece is wide. A cut
+  longer than the capacity can't be made at the station; it becomes a
+  **non-standard cross cut** made with the long track. These are allowed but
+  heavily penalised (one costs as much as ten ordinary cross cuts), so the
+  layout only uses one when it saves a sheet or places a panel that would
+  otherwise not fit. The cut list and drawing flag every non-standard cut.
 
 Each calculation runs a **time-budgeted search** in a Web Worker, so the UI
 never blocks: all 96 combinations of the packer's heuristic knobs (placement
@@ -26,8 +30,9 @@ hundreds of candidates in a row fail to improve. Each candidate is refined
 by a local-improvement pass that
 relocates and swaps panels between strips (letting strips shrink when a tall
 straggler finds a better home). The best result wins by: fewest unplaced
-panels, then least stock consumed, then **fewest rips**, then **fewest cross
-cuts**, then fewest mixed-panel strips, preferring smaller sheets when
+panels, then least stock consumed, then **fewest weighted cuts** (a rip
+counts as three cross cuts, a non-standard cross cut as ten), then fewest
+mixed-panel strips, preferring smaller sheets when
 material ties, then least strip area committed (biggest reusable offcut).
 
 Projects are saved automatically to your browser's local storage — name them

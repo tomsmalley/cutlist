@@ -460,8 +460,7 @@ worker.onmessage = (e: MessageEvent<CalcResponse>) => {
     resultsEl,
     result,
     project.panels,
-    project.options.kerf,
-    project.options.ripOversized,
+    project.options,
     msg.tried
   );
 };
