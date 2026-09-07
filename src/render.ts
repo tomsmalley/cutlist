@@ -64,7 +64,7 @@ export function renderResults(
       <div class="stat"><span class="stat-value">${placedCount}</span><span class="stat-label">panels placed</span></div>
       <div class="stat"><span class="stat-value">${efficiency.toFixed(1)}%</span><span class="stat-label">material used</span></div>
       <div class="stat"><span class="stat-value">${((totalSheetArea - totalPanelArea) / 1e6).toFixed(2)} m²</span><span class="stat-label">waste</span></div>
-      ${layoutsTried ? `<div class="stat"><span class="stat-value">${layoutsTried}</span><span class="stat-label">layouts tried</span></div>` : ''}
+      ${layoutsTried ? `<div class="stat"><span class="stat-value" id="layouts-tried">${layoutsTried}</span><span class="stat-label">layouts tried</span></div>` : ''}
       ${nonstdCount ? `<div class="stat stat-nonstd"><span class="stat-value">${nonstdCount}</span><span class="stat-label">non-standard cut${nonstdCount === 1 ? '' : 's'}</span></div>` : ''}
     </div>`;
 

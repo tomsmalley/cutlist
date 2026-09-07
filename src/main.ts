@@ -446,6 +446,10 @@ worker.onmessage = (e: MessageEvent<CalcResponse>) => {
   if (msg.runId !== runSeq) return; // stale run superseded by newer input
   if (msg.type === 'progress') {
     showCalcProgress(Math.round((100 * msg.done) / msg.total));
+    // Results only re-render when the best layout improves; the tally of
+    // layouts tried keeps counting in between.
+    const tried = resultsEl.querySelector('#layouts-tried');
+    if (tried) tried.textContent = String(msg.tried);
     return;
   }
   // Interim results render right away; the button stays busy until the

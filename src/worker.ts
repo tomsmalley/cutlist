@@ -103,7 +103,7 @@ async function search(req: CalcRequest): Promise<void> {
       i < deterministic.length ? (elapsed * deterministic.length) / i : deterministicMs;
     const total = projected + budget;
     lastPct = Math.max(lastPct, Math.min(99, Math.floor((100 * elapsed) / total)));
-    post({ type: 'progress', runId, done: lastPct, total: 100 });
+    post({ type: 'progress', runId, done: lastPct, total: 100, tried });
 
     // Show the best so far as soon as there is one, and every improvement
     // after that; the budget keeps refining it.
